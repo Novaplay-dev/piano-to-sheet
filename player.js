@@ -30,20 +30,28 @@ export function midiEvents(buf) {
         const a = buf[i++], b = buf[i++];
         if (ch === 9) continue; // drums
         if (cmd === 0x90 && b === 0) raw.push({ tick, data: [0x80, a, 0] });
-        else if (cmd === 0x90 || cmd === 0x80) raw.push({ tick, data: [cmd, a, b] });
+        else if (cmd === 0x90 || cmd === 0x80) raw.push({ tick, ch, data: [cmd, a, b] });
+        else if (cmd === 0xb0 && a === 7) raw.push({ tick, ch, vol: b }); // channel volume
         else if (cmd === 0xb0 && [64, 66, 67].includes(a)) raw.push({ tick, data: [0xb0, a, b] }); // pedals
       }
     }
     i = end;
   }
   // stable sort; at equal ticks: tempo first, note-offs before note-ons (repeated notes re-strike)
-  const rank = (e) => (e.tempo ? 0 : e.data[0] === 0x80 ? 1 : 2);
+  const rank = (e) => (e.tempo || e.vol !== undefined ? 0 : e.data[0] === 0x80 ? 1 : 2);
   raw.sort((x, y) => x.tick - y.tick || rank(x) - rank(y));
   let lastTick = 0, sec = 0, tempo = 500000;
-  const events = [];
+  // Files from notation programs (e.g. LilyPond) strike every note equally hard and put the
+  // dynamics in the channel volume: then the volume becomes how hard each key is struck.
+  const vels = new Set(raw.filter((e) => e.data?.[0] === 0x90).map((e) => e.data[2]));
+  const volAsVel = vels.size === 1 && raw.some((e) => e.vol !== undefined);
+  const vol = new Map(), events = [];
   for (const e of raw) {
     sec += ((e.tick - lastTick) * tempo) / div / 1e6; lastTick = e.tick;
-    if (e.tempo) tempo = e.tempo; else events.push({ t: sec, data: e.data });
+    if (e.tempo) tempo = e.tempo;
+    else if (e.vol !== undefined) vol.set(e.ch, e.vol);
+    else if (volAsVel && e.data[0] === 0x90) events.push({ t: sec, data: [0x90, e.data[1], Math.max(1, vol.get(e.ch) ?? 100)] });
+    else events.push({ t: sec, data: e.data });
   }
   return { events, duration: events.length ? events[events.length - 1].t : 0 };
 }
