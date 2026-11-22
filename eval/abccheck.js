@@ -12,6 +12,12 @@ export const ABCJS = mod.exports;
 export function abcProblem(abc, meter) {
   const [tune] = ABCJS.parseOnly(abc);
   if (tune.warnings) return 'abcjs: ' + tune.warnings.join('; ');
+  // abcjs parses but crashes while drawing a triplet whose group contains invisible rests
+  const badTrip = abc.match(/\(3:2:(\d+)((?:\s*(?:\[[^\]]*\]|[_=^]*[A-Ga-gzx][,']*)\d*-?){1,6})/g)?.find((g) => {
+    const n = +g.match(/\(3:2:(\d+)/)[1];
+    return [...g.matchAll(/(\[[^\]]*\]|[_=^]*[A-Ga-gzx][,']*)\d*/g)].slice(0, n).some((t) => t[1] === 'x');
+  });
+  if (badTrip) return `triplet with invisible rest (abcjs drawing crash): ${badTrip}`;
   const bar = METERS[meter].bar;
   for (const line of abc.split('\n').filter((l) => l.startsWith('[V:'))) {
     const body = line.slice(6).replace(/"[^"]*"/g, '').replace(/\[[A-Za-z]:[^\]]*\]/g, ''); // text, inline fields

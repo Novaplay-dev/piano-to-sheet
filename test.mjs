@@ -77,6 +77,10 @@ const C = { fifths: 0, minor: false };
   assert.deepEqual(quantize(trip, { bpm, meter: '4/4' }).map((n) => n.s), [0, 4, 8, 12, 16, 20]);
 }
 
+// --- the abcjs drawing crash (triplet bracket on invisible rests) is detected ---
+assert.match(abcProblem('X:1\nM:4/4\nL:1/48\nK:C\nV:RH\n[V:RH] (3:2:3x6c6x6 z36 |]', '4/4') || '', /invisible rest/);
+assert.equal(abcProblem('X:1\nM:4/4\nL:1/48\nK:C\nV:RH\n[V:RH] (3:2:3z6c6z6 z36 |]', '4/4'), null);
+
 // --- crossed hands: tap marks the switch, the pause (whole empty bars) is cut out ---
 {
   const ev = [];

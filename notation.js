@@ -380,12 +380,20 @@ function barAbc(evs, m, invisibleRests) {
     if (i && (atBeat || !ev.pitches || !evs[i - 1].pitches)) out += ' '; // beams break at beats and rests
     let scale = 1;
     const quarterEvs = evs.filter((e) => Math.floor(e.o / 12) === Math.floor(ev.o / 12)); // triplet group
-    if (isTripletBeat(quarterEvs)) {
+    const trip = isTripletBeat(quarterEvs);
+    // abcjs can't hang a triplet bracket on invisible rests (it crashes while drawing):
+    // an all-rest triplet beat in a hidden voice becomes one invisible quarter rest,
+    // and a triplet group that has notes uses visible rests.
+    if (trip && invisibleRests && quarterEvs.every((e) => !e.pitches)) {
+      if (ev === quarterEvs[0]) out += 'x12';
+      continue;
+    }
+    if (trip) {
       scale = 1.5;
       if (ev === quarterEvs[0]) out += (i && !out.endsWith(' ') ? ' ' : '') + `(3:2:${quarterEvs.length}`;
     }
     const len = ev.L * scale;
-    if (!ev.pitches) { out += (invisibleRests ? 'x' : 'z') + len; continue; }
+    if (!ev.pitches) { out += (invisibleRests && !trip ? 'x' : 'z') + len; continue; }
     out += (ev.acc.length > 1 ? `[${ev.acc.join('')}]` : ev.acc[0]) + len + (ev.tie ? '-' : '');
   }
   return out;

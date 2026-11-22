@@ -166,7 +166,12 @@ function render() {
     $('sheet').innerHTML = `<div class="empty">${notes.length} notes were received, but none landed after the count-in. Start playing after the 4 count-in clicks.</div>`;
     return;
   }
-  [visual] = ABCJS.renderAbc('sheet', r.abc, { responsive: 'resize', add_classes: true, paddingleft: 0, paddingright: 0 });
+  try {
+    [visual] = ABCJS.renderAbc('sheet', r.abc, { responsive: 'resize', add_classes: true, paddingleft: 0, paddingright: 0 });
+  } catch (e) {
+    $('sheet').innerHTML = `<div class="empty">Sorry, this sheet couldn't be drawn (${e.message}). Your recording is safe: tap "Save raw recording" and send the file.</div>`;
+    return;
+  }
   if (!recording && r.key) $('info').textContent = `${notes.length} notes · key ${keyName(r.key)} · RH ${r.rh.length} / LH ${r.lh.length}`;
 }
 
@@ -188,7 +193,7 @@ function onMidi(e) {
 let liveTimer;
 function liveRender() { clearTimeout(liveTimer); liveTimer = setTimeout(render, 400); }
 
-$('connectBtn').onclick = async () => {
+async function connect() {
   if (!navigator.requestMIDIAccess) {
     $('midiStatus').textContent = 'This browser has no Web MIDI. Use Chrome on Android/desktop.';
     return;
@@ -207,7 +212,10 @@ $('connectBtn').onclick = async () => {
   } catch (err) {
     $('midiStatus').textContent = 'MIDI permission denied';
   }
-};
+}
+$('connectBtn').onclick = connect;
+// reconnect by itself when MIDI was allowed before (no prompt needed)
+navigator.permissions?.query({ name: 'midi' }).then((st) => { if (st.state === 'granted') connect(); }).catch(() => {});
 
 // ---------- metronome + recording ----------
 function click(time, accent) {
