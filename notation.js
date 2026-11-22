@@ -551,10 +551,10 @@ function barClefs(main, held, start) {
 }
 
 export function transcribe(rawNotes, opts) {
-  let { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3, cross = [], free = false } = opts;
+  let { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3, cross = [], free = false, triplets = true } = opts;
   if (free && rawNotes.length > 1) ({ notes: rawNotes, cross, bpm } = freeTiming(rawNotes, { bpm, meter, cross }));
   const m = METERS[meter], g = grid * 3;
-  const q = applyCrossMarks(quantize(rawNotes, { bpm, meter, grid }), cross, 60000 / bpm / m.beat, m.bar);
+  const q = applyCrossMarks(quantize(rawNotes, { bpm, meter, grid, triplets }), cross, 60000 / bpm / m.beat, m.bar);
   if (!q.length) return { abc: '', key: null };
   const k = key === 'auto' ? detectKey(q) : key;
   const split = splitHands(q, { mode: hands, splitPoint });

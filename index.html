@@ -68,6 +68,9 @@
     <label>Shortest note
       <select id="grid"><option value="1">16th</option><option value="2">8th</option></select>
     </label>
+    <label>Triplets
+      <select id="trip"><option value="0">No triplets</option><option value="1">Song has triplets</option></select>
+    </label>
     <label>Hands
       <select id="hands">
         <option value="auto">Auto (smart)</option>
@@ -138,7 +141,7 @@ import { transcribe, keyName, METERS } from './notation.js';
 import { SONGS, perform } from './songs.js';
 
 const $ = (id) => document.getElementById(id);
-const els = ['bpm', 'meter', 'grid', 'hands', 'lhTop', 'key', 'title', 'latency', 'click'];
+const els = ['bpm', 'meter', 'grid', 'trip', 'hands', 'lhTop', 'key', 'title', 'latency', 'click'];
 let notes = [];          // [{p, t, off}] ms relative to bar 1 downbeat
 let pending = new Map(); // pitch -> onset
 let tempoScale = 1;      // free mode: x2 / /2 if the beat was found at the wrong level
@@ -191,6 +194,7 @@ function opts() {
     hands: $('hands').value, splitPoint: +$('lhTop').value + 1, title: $('title').value || 'My Song',
     key: kv === 'auto' ? 'auto' : { fifths: +kv.split(',')[0], minor: kv.endsWith(',1') },
     barsPerLine: innerWidth < 600 ? 2 : 4,
+    triplets: $('trip').value === '1', // off unless asked: timing wobble otherwise looks like triplets
     cross: crossMarks,
   };
 }
@@ -428,7 +432,8 @@ let demoIdx = 0;
 $('demoBtn').onclick = () => {
   const song = SONGS[demoIdx++ % SONGS.length];
   $('bpm').value = song.bpm; $('meter').value = song.meter; $('title').value = song.name;
-  $('key').value = 'auto'; $('hands').value = 'auto';
+  $('key').value = 'auto'; $('hands').value = 'auto'; showSplit();
+  $('trip').value = song.name.startsWith('Moonlight') ? '1' : '0'; // only that demo has triplets
   notes = perform(song, Date.now() % 1000).map(({ p, t, off }) => ({ p, t, off }));
   crossMarks = []; tempoScale = 1;
   render();
