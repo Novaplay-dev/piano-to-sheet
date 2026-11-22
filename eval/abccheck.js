@@ -14,7 +14,8 @@ export function abcProblem(abc, meter) {
   if (tune.warnings) return 'abcjs: ' + tune.warnings.join('; ');
   const bar = METERS[meter].bar;
   for (const line of abc.split('\n').filter((l) => l.startsWith('[V:'))) {
-    for (const b of line.slice(6).replace('|]', '').split('|').filter((x) => x.trim())) {
+    const body = line.slice(6).replace(/"[^"]*"/g, '').replace(/\[[A-Za-z]:[^\]]*\]/g, ''); // text, inline fields
+    for (const b of body.replace('|]', '').split('|').filter((x) => x.trim())) {
       for (const voice of b.split('&')) {
         let total = 0, tripLeft = 0;
         for (const x of voice.matchAll(/\(3:2:(\d+)|(\[[^\]]*\]|[_=^]*[A-Ga-gzx][,']*)(\d*)/g)) {

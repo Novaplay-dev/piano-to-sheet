@@ -77,6 +77,24 @@ const C = { fifths: 0, minor: false };
   assert.deepEqual(quantize(trip, { bpm, meter: '4/4' }).map((n) => n.s), [0, 4, 8, 12, 16, 20]);
 }
 
+// --- crossed hands: tap marks the switch, the pause (whole empty bars) is cut out ---
+{
+  const ev = [];
+  [76, 74, 72, 74].forEach((p, i) => ev.push(N(p, i)));       // bar 1 RH melody
+  ev.push(N(76, 4, 2), N(76, 6, 2), N(48, 0, 4), N(43, 4, 4));  // bar 2 RH, LH bass
+  // tap at 2.2 s (bar 2), pause, start again at bar 6 (beat 20) with hands crossed:
+  // LH reaches over and plays the high melody, RH plays middle chords
+  [84, 83, 81, 79, 84].forEach((p, i) => ev.push(N(p, 20 + i, i === 4 ? 4 : 1)));
+  for (let b = 20; b < 28; b++) ev.push(N(60, b), N(64, b), N(67, b));
+  const r = transcribe(ev, { bpm, key: C, cross: [2200 + 2000] });
+  assert.equal(abcProblem(r.abc, '4/4'), null, r.abc);
+  const rh = voiceLine(r.abc, 'RH'), lh = voiceLine(r.abc, 'LH');
+  assert.equal(rh.split('|').length - 1, 4, 'pause cut: 2 normal + 2 crossed bars\n' + r.abc);
+  assert.match(rh, /"\^hands crossed"\[CEG\]12/);              // marked, RH has the chords
+  assert.match(lh, /\[K:clef=treble\] c'12 b12 a12 g12 \|.* c'48/); // LH melody, clef switches to treble
+  assert.deepEqual([...new Set(r.lh.filter((n) => n.s >= 96).map((n) => n.p))].sort(), [79, 81, 83, 84]);
+}
+
 // --- abcjs: parse without warnings, every bar (and each overlay voice) exactly full ---
 const checkAbc = (abc, meter, label) => assert.equal(abcProblem(abc, meter), null, `${label}\n${abc}`);
 

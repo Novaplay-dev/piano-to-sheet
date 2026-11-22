@@ -32,6 +32,8 @@
   #recBtn { width: 100%; min-height: 64px; font-size: 20px; background: var(--rec); color: #fff; display: flex; align-items: center; justify-content: center; gap: 10px; }
   #recBtn .dot { width: 14px; height: 14px; border-radius: 50%; background: #fff; }
   #recBtn.on .dot { border-radius: 3px; }
+  #crossBtn { width: 100%; min-height: 64px; margin-top: 10px; font-size: 18px; background: var(--line); color: var(--ink); }
+  #crossBtn.on { background: #7b5cd6; color: #fff; }
   #beat { display: flex; gap: 6px; justify-content: center; margin-top: 10px; min-height: 12px; }
   #beat i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); }
   #beat i.hit { background: var(--accent); }
@@ -88,6 +90,7 @@
 
 <div class="panel">
   <button id="recBtn" disabled><span class="dot"></span><span id="recLabel">Record</span></button>
+  <button id="crossBtn" hidden>✋ Cross hands</button>
   <div id="beat"></div>
   <div id="info">Connect your piano, then press Record. You get a one-bar count-in.</div>
 </div>
@@ -112,6 +115,7 @@ const $ = (id) => document.getElementById(id);
 const els = ['bpm', 'meter', 'grid', 'hands', 'key', 'title', 'latency', 'click'];
 let notes = [];          // [{p, t, off}] ms relative to bar 1 downbeat
 let pending = new Map(); // pitch -> onset
+let crossMarks = [];     // ms from bar 1 where "cross hands" was tapped (each tap toggles)
 let recording = false, t0 = 0, audio, timer, lastAbc = '', visual;
 
 // key options
@@ -128,7 +132,7 @@ const store = {
 };
 const saved = store.get('settings') || {};
 for (const id of els) if (saved[id] != null) $(id).value = saved[id];
-notes = store.get('take') || [];
+{ const take = store.get('take'); notes = Array.isArray(take) ? take : take?.notes || []; crossMarks = take?.cross || []; }
 for (const id of els) $(id).addEventListener('change', () => {
   store.set('settings', Object.fromEntries(els.map((i) => [i, $(i).value])));
   render();
@@ -142,6 +146,7 @@ function opts() {
     hands: hm, splitPoint: +sp || 60, title: $('title').value || 'My Song',
     key: kv === 'auto' ? 'auto' : { fifths: +kv.split(',')[0], minor: kv.endsWith(',1') },
     barsPerLine: innerWidth < 600 ? 2 : 4,
+    cross: crossMarks,
   };
 }
 
@@ -213,6 +218,7 @@ async function start() {
   const pStart = performance.now() + lead * 1000;
   t0 = pStart + beats * beatSec * 1000; // downbeat of bar 1, after the count-in
   notes = []; pending.clear(); recording = true;
+  crossMarks = []; $('crossBtn').hidden = false; crossLabel();
   $('beat').innerHTML = '<i></i>'.repeat(beats);
   let k = 0;
   const keepClicking = $('click').value === '1';
@@ -222,7 +228,7 @@ async function start() {
       const idx = k % beats, delay = (aStart + k * beatSec - audio.currentTime) * 1000, countIn = k < beats;
       setTimeout(() => {
         [...$('beat').children].forEach((d, i) => d.classList.toggle('hit', i === idx));
-        $('info').textContent = countIn ? `Count-in… ${beats - idx}` : `Recording · ${notes.length} notes`;
+        $('info').textContent = countIn ? `Count-in… ${beats - idx}` : `Recording · ${notes.length} notes${crossMarks.length % 2 ? ' · hands crossed' : ''}`;
       }, delay);
       k++;
     }
@@ -238,13 +244,23 @@ function stop() {
   pending.forEach((t, p) => notes.push({ p, t, off: now }));
   pending.clear();
   notes.sort((a, b) => a.t - b.t);
-  store.set('take', notes);
+  store.set('take', { notes, cross: crossMarks });
+  $('crossBtn').hidden = true;
   $('beat').innerHTML = '';
   $('recBtn').classList.remove('on'); $('recLabel').textContent = 'Record again';
   if (!notes.length) { $('info').textContent = 'No notes received.'; return; }
   render();
 }
 $('recBtn').onclick = () => (recording ? stop() : start());
+
+// Tap when you switch to (or back from) crossed hands. Take your time: the empty bars of
+// the pause are cut out, and the next part starts on the next bar of the sheet.
+function crossLabel() {
+  const on = crossMarks.length % 2 === 1;
+  $('crossBtn').classList.toggle('on', on);
+  $('crossBtn').textContent = on ? '✋ Hands crossed — tap to go back to normal' : '✋ Cross hands';
+}
+$('crossBtn').onclick = () => { if (recording) { crossMarks.push(performance.now() - t0); crossLabel(); } };
 
 // ---------- outputs ----------
 function download(name, data, type) {
@@ -283,6 +299,7 @@ $('demoBtn').onclick = () => {
   $('bpm').value = song.bpm; $('meter').value = song.meter; $('title').value = song.name;
   $('key').value = 'auto'; $('hands').value = 'auto';
   notes = perform(song, Date.now() % 1000).map(({ p, t, off }) => ({ p, t, off }));
+  crossMarks = [];
   render();
   $('demoBtn').textContent = `Demo: ${song.name} — tap for next`;
 };

@@ -405,21 +405,74 @@ function avgPitch(bars) {
   return ps.length ? avg(ps) : -Infinity;
 }
 
+// Pause cut + crossed hands. `cross` = times (ms from bar 1) where the player tapped the
+// "cross hands" button; each tap toggles crossed mode for the notes after it.
+// Around every tap, whole bars of silence are removed (the player stopped to cross hands),
+// so the music after it continues on the next bar.
+export function applyCrossMarks(q, cross, msPerTick, bar) {
+  const marks = [...cross].sort((x, y) => x - y).map((ms) => ms / msPerTick);
+  for (let i = 0; i < marks.length; i++) {
+    const M = marks[i];
+    const before = q.filter((n) => n.s < M), after = q.filter((n) => n.s >= M);
+    if (!after.length) continue;
+    const prevEnd = before.length ? Math.max(...before.map((n) => n.e)) : 0;
+    const next = Math.min(...after.map((n) => n.s));
+    const cut = Math.floor(next / bar) * bar - Math.ceil(prevEnd / bar) * bar;
+    if (cut <= 0) continue;
+    for (const n of after) { n.s -= cut; n.e -= cut; }
+    for (let j = i + 1; j < marks.length; j++) marks[j] -= cut;
+    marks[i] = next - cut; // the switch happens at the first note after the pause
+  }
+  for (const n of q) n.cross = marks.filter((M) => M <= n.s).length % 2 === 1;
+  return q;
+}
+
+// Clef per bar with hysteresis: a staff switches to bass/treble only when its notes clearly
+// live there (crossed hands, very high left hand, very low right hand).
+function barClefs(main, held, start) {
+  let clef = start;
+  return main.map((evs, bi) => {
+    const ps = [...evs, ...held[bi]].filter((e) => e.pitches).flatMap((e) => e.pitches);
+    if (ps.length) {
+      const a = avg(ps);
+      if (clef === 'treble' && a < 57) clef = 'bass';
+      else if (clef === 'bass' && a > 64) clef = 'treble';
+    }
+    return clef;
+  });
+}
+
 export function transcribe(rawNotes, opts) {
-  const { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3 } = opts;
+  const { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3, cross = [] } = opts;
   const m = METERS[meter], g = grid * 3;
-  const q = quantize(rawNotes, { bpm, meter, grid });
+  const q = applyCrossMarks(quantize(rawNotes, { bpm, meter, grid }), cross, 60000 / bpm / m.beat, m.bar);
   if (!q.length) return { abc: '', key: null };
   const k = key === 'auto' ? detectKey(q) : key;
-  const { lh, rh } = splitHands(q, { mode: hands, splitPoint });
+  const split = splitHands(q, { mode: hands, splitPoint });
+  // crossed: the left hand plays the upper part, the right hand the lower part
+  const bySP = (x, y) => x.s - y.s || x.p - y.p;
+  const rh = [...split.rh.filter((n) => !n.cross), ...split.lh.filter((n) => n.cross)].sort(bySP);
+  const lh = [...split.lh.filter((n) => !n.cross), ...split.rh.filter((n) => n.cross)].sort(bySP);
   const vR = handVoices(rh, g, m.beat, m.bar), vL = handVoices(lh, g, m.beat, m.bar);
   const last = Math.max(...[...vR, ...vL].flat().map((c) => c.e));
   const nBars = Math.max(1, Math.ceil(last / m.bar));
   const [bR, bR2, bL, bL2] = [...vR, ...vL].map((v) => toBars(v, m, nBars));
   decideAccidentals([bR, bR2], k.fifths, k.minor);
   decideAccidentals([bL, bL2], k.fifths, k.minor);
-  const R = staffAbc(bR, bR2, m), L = staffAbc(bL, bL2, m);
-  let abc = `X:1\nT:${title}\nM:${meter}\nL:1/48\nQ:${m.q}=${bpm}\nK:${keyName(k)}\n%%score {RH | LH}\nV:RH clef=treble name="RH"\nV:LH clef=bass name="LH"\n`;
+  const cR = barClefs(bR, bR2, 'treble'), cL = barClefs(bL, bL2, 'bass');
+  // bar index where crossed mode starts / ends -> text above the right-hand staff
+  const crossBar = new Map();
+  let was = false;
+  for (const n of [...q].sort(bySP)) if (n.cross !== was) { crossBar.set(Math.floor(n.s / m.bar), n.cross); was = n.cross; }
+  // clef changes; abcjs resets to the voice's clef on every new line, so repeat it there
+  const decorate = (bars, clefs, text) => bars.map((b, i) => {
+    const lineStart = i % barsPerLine === 0;
+    let pre = i && (clefs[i] !== clefs[i - 1] || (lineStart && clefs[i] !== clefs[0])) ? `[K:clef=${clefs[i]}] ` : '';
+    if (text && crossBar.has(i)) pre += crossBar.get(i) ? '"^hands crossed"' : '"^hands normal"';
+    return pre + b;
+  });
+  const R = decorate(staffAbc(bR, bR2, m), cR, true), L = decorate(staffAbc(bL, bL2, m), cL, false);
+  let abc = `X:1\nT:${title}\nM:${meter}\nL:1/48\nQ:${m.q}=${bpm}\nK:${keyName(k)}\n%%score {RH | LH}\nV:RH clef=${cR[0]} name="RH"\nV:LH clef=${cL[0]} name="LH"\n`;
   for (let i = 0; i < nBars; i += barsPerLine) {
     const end = i + barsPerLine >= nBars ? ' |]' : ' |';
     abc += `[V:RH] ${R.slice(i, i + barsPerLine).join(' | ')}${end}\n`;
