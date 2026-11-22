@@ -27,6 +27,7 @@
   button { font: 600 16px system-ui, sans-serif; border: 0; border-radius: 12px; min-height: 48px; padding: 0 16px; cursor: pointer; color: var(--bg); background: var(--accent); }
   button.secondary { background: var(--line); color: var(--ink); }
   button:disabled { opacity: .45; }
+  .full { grid-column: 1 / -1; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   .row > button { flex: 1 1 auto; }
   #recBtn { width: 100%; min-height: 64px; font-size: 20px; background: var(--rec); color: #fff; display: flex; align-items: center; justify-content: center; gap: 10px; }
@@ -69,11 +70,15 @@
     <label>Hands
       <select id="hands">
         <option value="auto">Auto (smart)</option>
-        <option value="fixed:60">Split at middle C</option>
-        <option value="fixed:55">Split at G3</option>
-        <option value="fixed:64">Split at E4</option>
+        <option value="fixed">Fixed split</option>
       </select>
     </label>
+    <div id="splitRow" class="full" hidden>
+      <label>Left hand plays up to (this note and lower)
+        <select id="lhTop"></select>
+      </label>
+      <button class="secondary" id="setKeyBtn" style="width:100%;margin-top:8px">🎹 Set by pressing a key on the piano</button>
+    </div>
     <label>Key
       <select id="key"><option value="auto">Auto-detect</option></select>
     </label>
@@ -127,7 +132,7 @@ import { transcribe, keyName, METERS } from './notation.js';
 import { SONGS, perform } from './songs.js';
 
 const $ = (id) => document.getElementById(id);
-const els = ['bpm', 'meter', 'grid', 'hands', 'key', 'title', 'latency', 'click'];
+const els = ['bpm', 'meter', 'grid', 'hands', 'lhTop', 'key', 'title', 'latency', 'click'];
 let notes = [];          // [{p, t, off}] ms relative to bar 1 downbeat
 let pending = new Map(); // pitch -> onset
 let crossMarks = [];     // ms from bar 1 where "cross hands" was tapped (each tap toggles)
@@ -140,13 +145,31 @@ for (let f = -7; f <= 7; f++) for (const minor of [false, true]) {
   $('key').append(o);
 }
 
+// note list for the fixed split: "G3 (g)" = scientific name + German/Helmholtz name
+const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const noteName = (m) => NAMES[m % 12] + (Math.floor(m / 12) - 1);
+function helmholtz(m) {
+  const n = NAMES[m % 12].replace('B', 'H').replace('#', 'is'), o = Math.floor(m / 12) - 1; // German: B = H, F# = Fis
+  return o >= 3 ? n.toLowerCase() + "'".repeat(o - 3) : n + ','.repeat(2 - o);
+}
+for (let m = 84; m >= 36; m--) {
+  const o = document.createElement('option');
+  o.value = m; o.textContent = `${noteName(m)} (${helmholtz(m)})${m === 60 ? ' — middle C' : ''}`;
+  $('lhTop').append(o);
+}
+$('lhTop').value = 59;
+const showSplit = () => { $('splitRow').hidden = $('hands').value !== 'fixed'; };
+$('hands').addEventListener('change', showSplit);
+
 // persist settings + last take (best effort)
 const store = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const saved = store.get('settings') || {};
+if (typeof saved.hands === 'string' && saved.hands.startsWith('fixed:')) { saved.lhTop = +saved.hands.slice(6) - 1; saved.hands = 'fixed'; } // old format
 for (const id of els) if (saved[id] != null) $(id).value = saved[id];
+showSplit();
 { const take = store.get('take'); notes = Array.isArray(take) ? take : take?.notes || []; crossMarks = take?.cross || []; }
 for (const id of els) $(id).addEventListener('change', () => {
   store.set('settings', Object.fromEntries(els.map((i) => [i, $(i).value])));
@@ -154,11 +177,11 @@ for (const id of els) $(id).addEventListener('change', () => {
 });
 
 function opts() {
-  const [hm, sp] = $('hands').value.split(':');
+
   const kv = $('key').value;
   return {
     bpm: +$('bpm').value || 80, meter: $('meter').value, grid: +$('grid').value,
-    hands: hm, splitPoint: +sp || 60, title: $('title').value || 'My Song',
+    hands: $('hands').value, splitPoint: +$('lhTop').value + 1, title: $('title').value || 'My Song',
     key: kv === 'auto' ? 'auto' : { fifths: +kv.split(',')[0], minor: kv.endsWith(',1') },
     barsPerLine: innerWidth < 600 ? 2 : 4,
     cross: crossMarks,
@@ -186,8 +209,22 @@ function render() {
 }
 
 // ---------- MIDI ----------
+let waitingForKey = false;
+$('setKeyBtn').onclick = () => {
+  waitingForKey = !waitingForKey;
+  $('setKeyBtn').textContent = waitingForKey ? '🎹 Now press the highest left-hand key…' : '🎹 Set by pressing a key on the piano';
+};
+
 function onMidi(e) {
   const [st, p, v] = e.data, cmd = st & 0xf0;
+  if (waitingForKey && !recording && cmd === 0x90 && v > 0) {
+    waitingForKey = false;
+    $('lhTop').value = Math.min(84, Math.max(36, p));
+    $('lhTop').dispatchEvent(new Event('change')); // saves + redraws
+    $('setKeyBtn').textContent = '🎹 Set by pressing a key on the piano';
+    $('info').textContent = `Left hand now plays ${noteName(+$('lhTop').value)} and everything below.`;
+    return;
+  }
   if (!recording) return;
   midiCount++;
   // Some Android devices stamp MIDI events with another clock (or 0): fall back to "now".

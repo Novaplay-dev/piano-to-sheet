@@ -81,6 +81,14 @@ const C = { fifths: 0, minor: false };
 assert.match(abcProblem('X:1\nM:4/4\nL:1/48\nK:C\nV:RH\n[V:RH] (3:2:3x6c6x6 z36 |]', '4/4') || '', /invisible rest/);
 assert.equal(abcProblem('X:1\nM:4/4\nL:1/48\nK:C\nV:RH\n[V:RH] (3:2:3z6c6z6 z36 |]', '4/4'), null);
 
+// --- fixed split: "left hand up to G3" keeps G3 in the left hand, G#3 goes right ---
+{
+  const ev = [N(43, 0), N(50, 1), N(55, 2), N(56, 3), N(67, 0, 4)];
+  const r = transcribe(ev, { bpm, key: C, hands: 'fixed', splitPoint: 55 + 1 });
+  assert.deepEqual(r.lh.map((n) => n.p), [43, 50, 55]);
+  assert.deepEqual(r.rh.map((n) => n.p).sort(), [56, 67]);
+}
+
 // --- crossed hands: tap marks the switch, the pause (whole empty bars) is cut out ---
 {
   const ev = [];
