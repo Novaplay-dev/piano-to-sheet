@@ -60,13 +60,16 @@
 <div class="panel">
   <div class="row"><button id="connectBtn">Connect piano (MIDI)</button></div>
   <div class="grid" style="margin-top:12px">
-    <label>Tempo (beats/min)<input id="bpm" type="number" min="30" max="240" value="80" inputmode="numeric">
+    <label>Tempo (beats/min)<input id="bpm" type="number" min="30" max="240" value="" placeholder="auto" inputmode="numeric">
       <button class="secondary" id="tapBtn" type="button" style="min-height:40px;margin-top:4px">👆 Tap tempo</button></label>
     <label>Time signature
-      <select id="meter"><option>4/4</option><option>3/4</option><option>2/4</option><option>2/2</option><option>3/8</option><option>6/8</option><option>9/8</option><option>12/8</option></select>
+      <select id="meter"><option value="auto">Auto (find it)</option><option>4/4</option><option>3/4</option><option>2/4</option><option>5/4</option><option>6/4</option><option>2/2</option><option>3/8</option><option>6/8</option><option>9/8</option><option>12/8</option></select>
     </label>
     <label>Shortest note
       <select id="grid"><option value="1">16th</option><option value="2">8th</option></select>
+    </label>
+    <label>Held notes
+      <select id="heldVoice"><option value="0">Simple (normal notes)</option><option value="1">Show as 2nd voice</option></select>
     </label>
     <label>Triplets
       <select id="trip"><option value="0">No triplets</option><option value="1">Song has triplets</option></select>
@@ -82,6 +85,10 @@
         <select id="lhTop"></select>
       </label>
       <button class="secondary" id="setKeyBtn" style="width:100%;margin-top:8px">🎹 Set by pressing a key on the piano</button>
+      <label style="margin-top:10px">When hands are crossed, left hand plays from (this note and higher)
+        <select id="crossFrom"></select>
+      </label>
+      <button class="secondary" id="setCrossBtn" style="width:100%;margin-top:8px">🎹 Set by pressing a key on the piano</button>
     </div>
     <label>Key
       <select id="key"><option value="auto">Auto-detect</option></select>
@@ -141,7 +148,7 @@ import { transcribe, keyName, METERS } from './notation.js';
 import { SONGS, perform } from './songs.js';
 
 const $ = (id) => document.getElementById(id);
-const els = ['bpm', 'meter', 'grid', 'trip', 'hands', 'lhTop', 'key', 'title', 'latency', 'click'];
+const els = ['bpm', 'meter', 'grid', 'heldVoice', 'trip', 'hands', 'lhTop', 'crossFrom', 'key', 'title', 'latency', 'click'];
 let notes = [];          // [{p, t, off}] ms relative to bar 1 downbeat
 let pending = new Map(); // pitch -> onset
 let tempoScale = 1;      // free mode: x2 / /2 if the beat was found at the wrong level
@@ -162,12 +169,12 @@ function helmholtz(m) {
   const n = NAMES[m % 12].replace('B', 'H').replace('#', 'is'), o = Math.floor(m / 12) - 1; // German: B = H, F# = Fis
   return o >= 3 ? n.toLowerCase() + "'".repeat(o - 3) : n + ','.repeat(2 - o);
 }
-for (let m = 84; m >= 36; m--) {
+for (const [sel, hi, lo] of [['lhTop', 84, 36], ['crossFrom', 96, 48]]) for (let m = hi; m >= lo; m--) {
   const o = document.createElement('option');
   o.value = m; o.textContent = `${noteName(m)} (${helmholtz(m)})${m === 60 ? ' — middle C' : ''}`;
-  $('lhTop').append(o);
+  $(sel).append(o);
 }
-$('lhTop').value = 59;
+$('lhTop').value = 59; $('crossFrom').value = 72;
 const showSplit = () => { $('splitRow').hidden = $('hands').value !== 'fixed'; };
 $('hands').addEventListener('change', showSplit);
 
@@ -190,7 +197,9 @@ function opts() {
   const kv = $('key').value, free = $('click').value === 'free';
   return {
     free, // in free mode the tempo is only a hint for finding the beat
-    bpm: (+$('bpm').value || 80) * (free ? tempoScale : 1), meter: $('meter').value, grid: +$('grid').value,
+    bpm: free ? +$('bpm').value || 0 : +$('bpm').value || 80, // free + empty = find the tempo
+    scale: free ? tempoScale : 1, meter: $('meter').value, grid: +$('grid').value,
+    heldVoice: $('heldVoice').value === '1', crossFrom: +$('crossFrom').value,
     hands: $('hands').value, splitPoint: +$('lhTop').value + 1, title: $('title').value || 'My Song',
     key: kv === 'auto' ? 'auto' : { fifths: +kv.split(',')[0], minor: kv.endsWith(',1') },
     barsPerLine: innerWidth < 600 ? 2 : 4,
@@ -216,25 +225,28 @@ function render() {
     $('sheet').innerHTML = `<div class="empty">Sorry, this sheet couldn't be drawn (${e.message}). Your recording is safe: tap "Save raw recording" and send the file.</div>`;
     return;
   }
-  if (!recording && r.key) $('info').textContent = `${notes.length} notes · key ${keyName(r.key)} · RH ${r.rh.length} / LH ${r.lh.length}${opts().free ? ` · tempo found ≈ ${r.bpm}` : ''}`;
+  if (!recording && r.key) $('info').textContent = `${notes.length} notes · key ${keyName(r.key)} · RH ${r.rh.length} / LH ${r.lh.length}${opts().meter === 'auto' ? ` · ${r.meter}` : ''}${opts().free ? ` · tempo ≈ ${r.bpm}` : ''}`;
   $('scaleRow').hidden = recording || !opts().free;
 }
 
 // ---------- MIDI ----------
-let waitingForKey = false;
-$('setKeyBtn').onclick = () => {
-  waitingForKey = !waitingForKey;
-  $('setKeyBtn').textContent = waitingForKey ? '🎹 Now press the highest left-hand key…' : '🎹 Set by pressing a key on the piano';
+let waitingForKey = false; // false | 'lhTop' | 'crossFrom'
+const keyBtn = { lhTop: 'setKeyBtn', crossFrom: 'setCrossBtn' };
+const keyPrompt = { lhTop: '🎹 Now press the highest left-hand key…', crossFrom: '🎹 Now press the lowest key the crossed left hand plays…' };
+for (const [what, btn] of Object.entries(keyBtn)) $(btn).onclick = () => {
+  waitingForKey = waitingForKey === what ? false : what;
+  for (const [w, b] of Object.entries(keyBtn)) $(b).textContent = waitingForKey === w ? keyPrompt[w] : '🎹 Set by pressing a key on the piano';
 };
 
 function onMidi(e) {
   const [st, p, v] = e.data, cmd = st & 0xf0;
   if (waitingForKey && !recording && cmd === 0x90 && v > 0) {
-    waitingForKey = false;
-    $('lhTop').value = Math.min(84, Math.max(36, p));
-    $('lhTop').dispatchEvent(new Event('change')); // saves + redraws
-    $('setKeyBtn').textContent = '🎹 Set by pressing a key on the piano';
-    $('info').textContent = `Left hand now plays ${noteName(+$('lhTop').value)} and everything below.`;
+    const what = waitingForKey; waitingForKey = false;
+    const sel = $(what), opts_ = [...sel.options].map((o) => +o.value);
+    sel.value = Math.min(Math.max(...opts_), Math.max(Math.min(...opts_), p));
+    sel.dispatchEvent(new Event('change')); // saves + redraws
+    $(keyBtn[what]).textContent = '🎹 Set by pressing a key on the piano';
+    $('info').textContent = what === 'lhTop' ? `Left hand now plays ${noteName(+sel.value)} and everything below.` : `When crossed, the left hand plays ${noteName(+sel.value)} and higher.`;
     return;
   }
   if (!recording) return;
@@ -301,7 +313,8 @@ async function start() {
     timer = setInterval(() => { $('info').textContent = `Recording freely · ${notes.length} notes (${midiCount} MIDI messages)${crossMarks.length % 2 ? ' · hands crossed' : ''}`; }, 250);
     return;
   }
-  const beats = METERS[o.meter].bar / METERS[o.meter].beat; // 6/8 clicks dotted quarters
+  const mt = METERS[o.meter] || METERS['4/4']; // Auto: count 4 with the metronome
+  const beats = mt.bar / mt.beat; // 6/8 clicks dotted quarters
   const beatSec = 60 / o.bpm;
   const lead = 0.15;
   const aStart = audio.currentTime + lead;
@@ -421,7 +434,7 @@ $('longerBtn').onclick = () => rescale(0.5); // slower beat -> longer note value
 $('shorterBtn').onclick = () => rescale(2);
 function clickHint() {
   $('clickHint').textContent = $('click').value === 'free'
-    ? 'Free playing: press Record and just play. The beat is found from your playing — set the tempo roughly (or tap it) so note values come out right.'
+    ? 'Free playing: press Record and just play. Tempo and beat are found from your playing (leave Tempo empty = auto, or tap it).'
     : 'Play along with the beat, even with the sound off (watch the dots) — the rhythm is measured against it.';
 }
 $('click').addEventListener('change', clickHint);

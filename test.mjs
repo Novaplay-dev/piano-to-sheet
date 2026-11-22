@@ -120,7 +120,7 @@ for (const song of SONGS) {
     for (const n of ns) truth.set(`${n.p}@${Math.round(n.s * 12)}`, { h, len: Math.round(n.len * 12) });
   for (let seed = 1; seed <= SEEDS; seed++) {
     const perf = perform(song, seed);
-    const r = transcribe(perf, { bpm: song.bpm, meter: song.meter, barsPerLine: 4 });
+    const r = transcribe(perf, { bpm: song.bpm, meter: song.meter, barsPerLine: 4, triplets: !!song.triplets });
     if (keyName(r.key) === song.key) keyOk++;
     checkAbc(r.abc, song.meter, `${song.name} seed ${seed}`);
     for (const h of ['rh', 'lh'])
@@ -146,7 +146,7 @@ for (const song of SONGS) {
   for (const [h, ns] of [['rh', song.rh], ['lh', song.lh]]) for (const n of ns) truth.set(`${n.p}@${Math.round(n.s * 12)}`, h);
   let n = 0, ok = 0;
   for (let seed = 1; seed <= 10; seed++) {
-    const r = transcribe(perform(song, seed, { rubato: 0.08 }), { free: true, bpm: song.bpm, meter: song.meter });
+    const r = transcribe(perform(song, seed, { rubato: 0.08 }), { free: true, bpm: song.bpm, meter: song.meter, triplets: !!song.triplets });
     assert.equal(abcProblem(r.abc, song.meter), null);
     for (const h of ['rh', 'lh']) for (const x of r[h]) { n++; if (truth.get(`${x.p}@${x.s}`) === h) ok++; }
   }
@@ -158,7 +158,7 @@ for (const song of SONGS) {
 {
   const abcOf = (name) => {
     const s = SONGS.find((x) => x.name.startsWith(name));
-    return transcribe(perform(s, 1), { bpm: s.bpm, meter: s.meter, barsPerLine: 99 }).abc;
+    return transcribe(perform(s, 1), { bpm: s.bpm, meter: s.meter, barsPerLine: 99, triplets: !!s.triplets }).abc;
   };
   const elise = voiceLine(abcOf('Für Elise'), 'RH');
   assert.match(elise, /e3\^d3e3B3=d3c3 \| A6 z3 C3E3A3 \|/); // 3/8 beams the bar, natural cancels D#, rests break beams

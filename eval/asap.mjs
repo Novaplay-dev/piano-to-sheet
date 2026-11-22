@@ -19,8 +19,8 @@ const rows = [], diff = {}, trip = { tp: 0, fn: 0, fp: 0, tn: 0 }, handErr = {};
 
 for (const it of items) {
   const { meter, perf, match } = it;
-  const r = transcribe(perf, { bpm: 60, meter, barsPerLine: 4 });
-  const fx = FAST ? r : transcribe(perf, { bpm: 60, meter, hands: 'fixed', splitPoint: 60, barsPerLine: 4 });
+  const r = transcribe(perf, { bpm: 60, meter, barsPerLine: 4, triplets: true });
+  const fx = FAST ? r : transcribe(perf, { bpm: 60, meter, hands: 'fixed', splitPoint: 60, barsPerLine: 4, triplets: true });
   const handOf = (res) => { const h = new Map(); for (const x of ['rh', 'lh']) for (const n of res[x]) h.set(n.id, { h: x, s: n.s }); return h; };
   const app = handOf(r), fix = handOf(fx);
   let matched = 0, hand = 0, fixed = 0, onsetN = 0, onset = 0;

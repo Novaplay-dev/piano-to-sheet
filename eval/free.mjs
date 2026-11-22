@@ -38,8 +38,8 @@ for (const it of items) {
     }
     return { ok, oct, n: g.length - 1 };
   };
-  const free = ioiAcc(transcribe(it.rawPerf, { free: true, bpm: hint, meter: it.meter }));
-  const oracle = ioiAcc(transcribe(it.perf, { bpm: 60, meter: it.meter }));
+  const free = ioiAcc(transcribe(it.rawPerf, { free: true, bpm: hint, meter: it.meter, triplets: true }));
+  const oracle = ioiAcc(transcribe(it.perf, { bpm: 60, meter: it.meter, triplets: true }));
   T.ioi += free.ok; T.ioiOct += free.oct; T.ioiN += free.n; T.ioiOracle += oracle.ok;
 }
 const pct = (a, b) => ((100 * a) / b).toFixed(1) + '%';

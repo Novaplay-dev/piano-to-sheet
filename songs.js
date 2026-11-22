@@ -47,7 +47,7 @@ export const SONGS = [
              C4 .5, A4 .5, F4 .5, A4 .5, C4 .5, G4 .5, E4 .5, G4 .5, B3 .5, G4 .5, D4 .5, G4 .5, C4 .5, G4 .5, E4 .5, G4 .5`),
   },
   {
-    name: 'Moonlight Sonata (Beethoven)', meter: '2/2', bpm: 27, key: 'C#m',
+    name: 'Moonlight Sonata (Beethoven)', meter: '2/2', bpm: 27, key: 'C#m', triplets: true,
     rh: seq([rep(tri('G#3', 'C#4', 'E4'), 8), rep(tri('A3', 'C#4', 'E4'), 2), rep(tri('A3', 'D4', 'F#4'), 2),
              tri('G#3', 'B#3', 'F#4'), tri('G#3', 'C#4', 'E4'), tri('G#3', 'C#4', 'D#4'), tri('F#3', 'B#3', 'D#4')].join(', ')),
     lh: seq(`[C#2 C#3] 4, [B1 B2] 4, [A1 A2] 2, [F#1 F#2] 2, [G#1 G#2] 4`),

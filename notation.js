@@ -5,6 +5,8 @@
 export const METERS = {
   '4/4': { bar: 48, beat: 12, strong: [24], q: '1/4' },
   '3/4': { bar: 36, beat: 12, strong: [], q: '1/4' },
+  '5/4': { bar: 60, beat: 12, strong: [36], q: '1/4' }, // grouped 3+2
+  '6/4': { bar: 72, beat: 12, strong: [36], q: '1/4' },
   '2/4': { bar: 24, beat: 12, strong: [], q: '1/4' },
   '2/2': { bar: 48, beat: 24, strong: [], q: '1/2' }, // cut time
   '3/8': { bar: 18, beat: 6, strong: [], q: '1/8', beamBar: true }, // 3/8 beams the whole bar
@@ -70,7 +72,7 @@ export function quantize(notes, { bpm, meter, grid = 1, triplets = true }) {
     .map((n) => {
       const s = q(n.s);
       // releases come early far more often than late, so round them up a little
-      return { p: n.p, s, e: Math.max(q(n.e + 0.15 * gridAt(n.e)), s + gridAt(s)), held: n.e - n.s, id: n.id };
+      return { p: n.p, s, e: Math.max(q(n.e + 0.15 * gridAt(n.e)), s + gridAt(s)), held: n.e - n.s, id: n.id, raw: n.s };
     })
     .filter((n) => n.s >= 0)
     .sort((a, b) => a.s - b.s || a.p - b.p);
@@ -146,13 +148,29 @@ function handCost(ns, busy, held, pos, side) {
 }
 
 // ---------- 3. voices per hand ----------
+// Notes one hand plays one after the other must not end up stacked as a chord just because
+// they fell into the same grid slot (fast notes, ornaments): if a hand's notes in one slot
+// were struck clearly apart (> 1/3 of a grid step), the later ones move to the next slot.
+export function separateMelodic(notes, grid) {
+  const slotFirst = new Map();
+  for (const n of [...notes].sort((a, b) => a.raw - b.raw)) {
+    if (n.raw === undefined) continue;
+    let s = n.s;
+    while (slotFirst.has(s) && n.raw - slotFirst.get(s) > Math.max(grid / 3, 1.5)) s += grid;
+    if (!slotFirst.has(s)) slotFirst.set(s, n.raw);
+    if (s !== n.s) { const len = n.e - n.s; n.s = s; n.e = Math.max(n.e, s + Math.min(len, grid)); }
+  }
+  notes.sort((a, b) => a.s - b.s || a.p - b.p);
+}
+
 // A note that keeps sounding at least a beat past the hand's next attack is a held note:
 // it goes to a second voice on that staff (written with its own stems), everything else
 // is one voice of chords + rests. Returns [mainChords, heldChords].
-export function handVoices(notes, grid, beat, bar) {
+export function handVoices(notes, grid, beat, bar, heldVoice = true) {
   const onsets = [...new Set(notes.map((n) => n.s))].sort((a, b) => a - b);
   const nextOnset = (s) => onsets.find((o) => o > s) ?? Infinity;
-  const held = notes.filter((n) => n.e - nextOnset(n.s) >= beat / 2);
+  // heldVoice off: held keys are written as ordinary notes (cut at the next note), no 2nd voice
+  const held = heldVoice ? notes.filter((n) => n.e - nextOnset(n.s) >= beat / 2) : [];
   const main = notes.filter((n) => !held.includes(n));
   return [toVoice(main, grid, beat, bar), toVoice(held, grid, beat, bar)];
 }
@@ -429,11 +447,11 @@ function onsetEvents(notes) {
     const t = e.ns.reduce((s, n) => s + n.t, 0) / e.ns.length;
     const dur = Math.max(...e.ns.map((n) => n.off - n.t));
     const low = Math.min(...e.ns.map((n) => n.p));
-    return { t, w: 1 + 0.3 * (e.ns.length - 1) + Math.min(dur, 1500) / 1000 + (low < 55 ? 0.5 : 0) };
+    return { t, low, w: 1 + 0.3 * (e.ns.length - 1) + Math.min(dur, 1500) / 1000 + (low < 55 ? 0.5 : 0) };
   });
 }
 
-export function trackBeats(notes, { bpm = 80 } = {}) {
+export function trackBeats(notes, { bpm = 80, prior = FREE.prior } = {}) {
   const F = FREE.frame, evs = onsetEvents(notes);
   const start = evs[0].t, N = Math.ceil((evs[evs.length - 1].t - start) / F) + 2;
   const env = new Float64Array(N);
@@ -443,14 +461,14 @@ export function trackBeats(notes, { bpm = 80 } = {}) {
   }
   const mean = env.reduce((a, b) => a + b, 0) / N;
   const sd = Math.sqrt(env.reduce((a, b) => a + (b - mean) ** 2, 0) / N) || 1;
-  for (let i = 0; i < N; i++) env[i] /= sd;
+  for (let i = 0; i < N; i++) env[i] = (env[i] - mean) / sd; // zero mean: a beat where nothing was struck costs
   // tempo: autocorrelation weighted by a log-normal prior around the hint
   const hint = 60000 / bpm / F;
   let P = Math.round(hint), bestA = -1;
   for (let L = Math.round(hint / 2.5); L <= Math.round(hint * 2.5) && L < N; L++) {
     let a = 0;
     for (let i = 0; i + L < N; i++) a += env[i] * env[i + L];
-    a = (a / (N - L)) * Math.exp(-0.5 * (Math.log2(L / hint) / FREE.prior) ** 2);
+    a = (a / (N - L)) * Math.exp(-0.5 * (Math.log2(L / hint) / prior) ** 2);
     if (a > bestA) { bestA = a; P = L; }
   }
   // dynamic programming beat tracking
@@ -488,24 +506,90 @@ export function beatIndexer(beats) {
   };
 }
 
+// The "tatum" is the most common short spacing between struck notes (e.g. your 8ths).
+// The meter's beat is k tatums: k = 1,2,4,.. (x3 for triplet / compound feel), chosen to
+// match the tempo hint, or without one a usual tempo for the time signature.
+export function tatumBeat(notes, meter = '4/4', triplets = false, hintBpm = 0) {
+  const m = METERS[meter], evs = onsetEvents(notes);
+  const ioi = evs.slice(1).map((e, i) => e.t - evs[i].t).filter((x) => x > 80 && x < 2000).sort((a, b) => a - b);
+  // 2/2: pick the quarter note (target ~580 ms), the half-note beat is two of them
+  const per = m.beat === 24 ? 2 : 1;
+  const target = (hintBpm ? 60000 / hintBpm : m.compound ? 900 : m.beat === 6 ? 420 : 580 * per) / per;
+  if (ioi.length < 4) return { tatum: target, k: per };
+  // density peak (log scale) among the shorter half of the spacings
+  const short = ioi.slice(0, Math.max(4, ioi.length >> 1));
+  let tatum = short[0], best = -1;
+  for (const c of short) {
+    const d = short.reduce((s, x) => s + Math.exp(-0.5 * (Math.log(x / c) / 0.08) ** 2), 0);
+    if (d > best) { best = d; tatum = c; }
+  }
+  const near = ioi.filter((x) => x > tatum * 0.8 && x < tatum * 1.25); // refine: middle of that cluster
+  tatum = near[near.length >> 1] || tatum;
+  const ks = m.compound || triplets ? [3, 6, 12, 24] : [1, 2, 4, 8, 16];
+  const k = ks.reduce((b, k) => (Math.abs(Math.log((tatum * k) / target)) < Math.abs(Math.log((tatum * b) / target)) ? k : b), ks[0]);
+  return { tatum, k: k * per };
+}
+export const autoTempo = (notes, meter, triplets) => { const { tatum, k } = tatumBeat(notes, meter, triplets); return 60000 / (tatum * k); };
+
+function beatAccents(notes, msBeat) {
+  const evs = onsetEvents(notes), med = [...notes].map((n) => n.p).sort((a, b) => a - b)[notes.length >> 1];
+  const nBeats = Math.ceil(Math.max(...evs.map((e) => e.t)) / msBeat) + 1;
+  const A = new Float64Array(Math.max(nBeats, 1));
+  for (const e of evs) {
+    const b = e.t / msBeat, k = Math.round(b);
+    if (k < 0 || k >= nBeats || Math.abs(b - k) > 0.2) continue;
+    A[k] += e.w + (e.low < med - 7 ? 1.5 : 0);
+  }
+  return A;
+}
+// how much more accent beat class `ph` (of bpb) gets than the other beats
+function phaseScore(A, bpb, ph) {
+  let on = 0, nOn = 0, off = 0, nOff = 0;
+  for (let k = 0; k < A.length; k++) if ((k - ph) % bpb === 0) { on += A[k]; nOn++; } else { off += A[k]; nOff++; }
+  return (on / (nOn || 1)) / ((off / (nOff || 1)) || 1e-9);
+}
+export function detectMeter(notes, msBeat) {
+  const A = beatAccents(notes, msBeat), prior = { 2: 0.9, 3: 1.05, 4: 1.1, 5: 1, 6: 0.9 };
+  let best = { meter: '4/4', score: -Infinity };
+  for (const bpb of [2, 3, 4, 5, 6]) for (let ph = 0; ph < bpb; ph++) {
+    const score = phaseScore(A, bpb, ph) * prior[bpb];
+    if (score > best.score) best = { meter: { 2: '2/4', 3: '3/4', 4: '4/4', 5: '5/4', 6: '6/4' }[bpb], score };
+  }
+  return best.meter;
+}
+// Which beat starts the bar: the first note's beat, unless another beat class clearly carries
+// the accents (bass notes on "1"). Returns how many beats of lead-in come before bar 2.
+export const BARSTART = { ratio: 1.6 };
+export function barPhase(notes, msBeat, bpb) {
+  if (bpb < 3) return 0; // 2-beat bars: too little evidence, keep the first note on 1
+  const A = beatAccents(notes, msBeat);
+  let ph = 0;
+  for (let c = 1; c < bpb; c++) if (phaseScore(A, bpb, c) > phaseScore(A, bpb, ph) * BARSTART.ratio && phaseScore(A, bpb, c) > phaseScore(A, bpb, 0) * BARSTART.ratio) ph = c;
+  return ph;
+}
+
 // Re-time a freely played take onto a steady grid: finds the beats and returns notes (and cross-hand taps) as if
 // played to a metronome at the detected tempo, with the first bar starting at 0.
-export function freeTiming(notes, { bpm = 80, meter = '4/4', cross = [] } = {}) {
-  if (notes.length < 2) return { notes, cross, bpm };
-  const m = METERS[meter];
-  // Track quarter notes in simple meters (2/2 half-note beats are split in two), so tempo
-  // changes inside a long beat don't push notes off their slots. Never finer: an 8th-note
-  // pulse clashes with triplets. Compound meters keep the dotted-quarter beat.
-  const sub = m.compound ? 1 : Math.max(1, m.beat / 12);
-  const { beats, evs } = trackBeats(notes, { bpm: bpm * sub });
+export function freeTiming(notes, { bpm = 0, meter = '4/4', cross = [], triplets = false, scale = 1 } = {}) {
+  if (notes.length < 2) return { notes, cross, bpm: bpm || 80 };
+  // Track the tatum (shortest regular note), not the beat: a slow first note or rubato is then
+  // just a longer/shorter tatum, and beats are made by grouping k tatums from the first note.
+  // (Tracking the beat directly could lock onto the off-beat 8ths after a hesitant start.)
+  const tb = tatumBeat(notes, meter, triplets, bpm), tatum = tb.tatum;
+  const k = tb.k / scale; // x2 / /2 buttons: longer or shorter note values
+  let { beats, evs } = trackBeats(notes, { bpm: 60000 / tatum, prior: 0.25 });
+  // People often start slowly: a first gap under 1.6 tatums is one
+  // slow note, not a note + rest, so drop tracked beats inside it.
+  // ponytail: only the very first gap is treated this way; a real rest there is rare.
+  if (evs.length > 4) {
+    const typical = tatum, gap = evs[1].t - evs[0].t;
+    if (gap < 1.6 * typical) beats = beats.filter((b) => b <= evs[0].t + 0.25 * typical || b >= evs[1].t - 0.25 * typical);
+  }
   const idx = beatIndexer(beats);
-  const pos = (x) => idx(x) / sub; // in meter beats
-  // Bar 1 starts on the first note's beat: you start recording at the start of the song.
-  // (Picking the most accented beat instead was worse on real performances.)
-  const bar1 = Math.round(idx(evs[0].t)) / sub;
+  const first = Math.round(idx(evs[0].t)); // the first note starts beat 1 of bar 1
   const intervals = beats.slice(1).map((b, i) => b - beats[i]).sort((a, b) => a - b);
-  const msBeat = intervals[intervals.length >> 1] * sub;
-  const out = (x) => (pos(x) - bar1) * msBeat;
+  const msBeat = intervals[intervals.length >> 1] * k; // meter beat
+  const out = (x) => ((idx(x) - first) / k) * msBeat;
   return {
     notes: notes.map((n) => ({ ...n, t: out(n.t), off: out(n.off) })),
     cross: cross.map(out),
@@ -517,17 +601,21 @@ export function freeTiming(notes, { bpm = 80, meter = '4/4', cross = [] } = {}) 
 // "cross hands" button; each tap toggles crossed mode for the notes after it.
 // Around every tap, whole bars of silence are removed (the player stopped to cross hands),
 // so the music after it continues on the next bar.
-export function applyCrossMarks(q, cross, msPerTick, bar) {
+export function applyCrossMarks(q, cross, msPerTick, bar, free = false) {
   const marks = [...cross].sort((x, y) => x - y).map((ms) => ms / msPerTick);
   for (let i = 0; i < marks.length; i++) {
     const M = marks[i];
     const before = q.filter((n) => n.s < M), after = q.filter((n) => n.s >= M);
     if (!after.length) continue;
-    const prevEnd = before.length ? Math.max(...before.map((n) => n.e)) : 0;
     const next = Math.min(...after.map((n) => n.s));
-    const cut = Math.floor(next / bar) * bar - Math.ceil(prevEnd / bar) * bar;
+    // free playing: the pause length means nothing, so the next part starts exactly on the bar
+    // after the last struck note (a key still held through the pause is cut there)
+    const prevEnd = !before.length ? 0 : free ? Math.max(...before.map((n) => n.s)) + 1 : Math.max(...before.map((n) => n.e));
+    const start = Math.ceil(prevEnd / bar) * bar;
+    const cut = free ? next - start : Math.floor(next / bar) * bar - start;
     if (cut <= 0) continue;
-    for (const n of after) { n.s -= cut; n.e -= cut; }
+    if (free) for (const n of before) n.e = Math.min(n.e, start);
+    for (const n of after) { n.s -= cut; n.e -= cut; if (n.raw !== undefined) n.raw -= cut; }
     for (let j = i + 1; j < marks.length; j++) marks[j] -= cut;
     marks[i] = next - cut; // the switch happens at the first note after the pause
   }
@@ -551,18 +639,29 @@ function barClefs(main, held, start) {
 }
 
 export function transcribe(rawNotes, opts) {
-  let { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3, cross = [], free = false, triplets = true } = opts;
-  if (free && rawNotes.length > 1) ({ notes: rawNotes, cross, bpm } = freeTiming(rawNotes, { bpm, meter, cross }));
+  let { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3, cross = [], free = false, triplets = false, heldVoice = true, crossFrom = 0, scale = 1 } = opts;
+  const autoMeter = meter === 'auto';
+  if (free && rawNotes.length > 1) ({ notes: rawNotes, cross, bpm } = freeTiming(rawNotes, { bpm, meter: autoMeter ? '4/4' : meter, cross, triplets, scale }));
+  if (autoMeter) meter = rawNotes.length > 1 ? detectMeter(rawNotes, 60000 / bpm) : '4/4'; // quarter-beat meters
+  if (free && rawNotes.length > 1) {
+    // bar lines follow the accents (e.g. bass on beat 1) when they clearly say so
+    const mm = METERS[meter], msB = 60000 / bpm, bpb = mm.bar / mm.beat;
+    const ph = barPhase(rawNotes, msB, bpb);
+    if (ph) { const sh = (bpb - ph) * msB; rawNotes = rawNotes.map((n) => ({ ...n, t: n.t + sh, off: n.off + sh })); cross = cross.map((c) => c + sh); }
+  }
   const m = METERS[meter], g = grid * 3;
-  const q = applyCrossMarks(quantize(rawNotes, { bpm, meter, grid, triplets }), cross, 60000 / bpm / m.beat, m.bar);
+  const q = applyCrossMarks(quantize(rawNotes, { bpm, meter, grid, triplets }), cross, 60000 / bpm / m.beat, m.bar, free);
   if (!q.length) return { abc: '', key: null };
   const k = key === 'auto' ? detectKey(q) : key;
   const split = splitHands(q, { mode: hands, splitPoint });
   // crossed: the left hand plays the upper part, the right hand the lower part
+  // (with a fixed split, crossFrom = lowest note the crossed-over left hand plays)
   const bySP = (x, y) => x.s - y.s || x.p - y.p;
-  const rh = [...split.rh.filter((n) => !n.cross), ...split.lh.filter((n) => n.cross)].sort(bySP);
-  const lh = [...split.lh.filter((n) => !n.cross), ...split.rh.filter((n) => n.cross)].sort(bySP);
-  const vR = handVoices(rh, g, m.beat, m.bar), vL = handVoices(lh, g, m.beat, m.bar);
+  const crossedLH = (n) => (hands === 'fixed' && crossFrom ? n.p >= crossFrom : split.rh.includes(n));
+  const rh = [...split.rh.filter((n) => !n.cross), ...q.filter((n) => n.cross && !crossedLH(n))].sort(bySP);
+  const lh = [...split.lh.filter((n) => !n.cross), ...q.filter((n) => n.cross && crossedLH(n))].sort(bySP);
+  separateMelodic(rh, g); separateMelodic(lh, g);
+  const vR = handVoices(rh, g, m.beat, m.bar, heldVoice), vL = handVoices(lh, g, m.beat, m.bar, heldVoice);
   const last = Math.max(...[...vR, ...vL].flat().map((c) => c.e));
   const nBars = Math.max(1, Math.ceil(last / m.bar));
   const [bR, bR2, bL, bL2] = [...vR, ...vL].map((v) => toBars(v, m, nBars));
@@ -587,7 +686,7 @@ export function transcribe(rawNotes, opts) {
     abc += `[V:RH] ${R.slice(i, i + barsPerLine).join(' | ')}${end}\n`;
     abc += `[V:LH] ${L.slice(i, i + barsPerLine).join(' | ')}${end}\n`;
   }
-  return { abc, key: k, lh, rh, voices: { rh: vR, lh: vL }, bpm: Math.round(bpm) };
+  return { abc, key: k, lh, rh, voices: { rh: vR, lh: vL }, bpm: Math.round(bpm), meter };
 }
 
 // ---------- helpers ----------
