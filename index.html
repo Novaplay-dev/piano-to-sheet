@@ -39,6 +39,7 @@
   #beat i.hit { background: var(--accent); }
   #info { font-size: 14px; color: var(--muted); margin-top: 8px; text-align: center; min-height: 20px; }
   #sheetWrap { background: var(--paper); border-radius: 14px; padding: 8px; min-height: 160px; color: #222; overflow: hidden; }
+  #sheet .playing { fill: #e0533d; stroke: #e0533d; }
   #sheetWrap .empty { color: #8a8174; text-align: center; padding: 50px 10px; font: italic 16px Georgia, serif; }
   details summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 4px 0; }
   .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
@@ -77,12 +78,20 @@
       <select id="key"><option value="auto">Auto-detect</option></select>
     </label>
     <label>Title<input id="title" value="My Song"></label>
+    <label>Metronome
+      <select id="click">
+        <option value="1">On</option>
+        <option value="quiet">Quiet</option>
+        <option value="0">Count-in only</option>
+        <option value="silent">Silent (dots only)</option>
+      </select>
+    </label>
   </div>
+  <p class="hint">Play along with the beat, even with the sound off (watch the dots) — the sheet's rhythm is measured against it.</p>
   <details style="margin-top:10px">
     <summary>Timing calibration</summary>
     <div class="grid" style="margin-top:8px">
       <label>Latency offset (ms)<input id="latency" type="number" value="0" step="10" inputmode="numeric"></label>
-      <label>Metronome<select id="click"><option value="1">On</option><option value="0">Count-in only</option></select></label>
     </div>
     <p class="hint">If every note lands a little late (or early) on the sheet, raise (or lower) the offset.</p>
   </details>
@@ -98,7 +107,7 @@
 <div id="sheetWrap"><div id="sheet"><div class="empty">Your sheet music appears here.</div></div></div>
 
 <div class="row noprint" style="margin-top:12px">
-  <button class="secondary" id="playBtn" disabled>▶ Play</button>
+  <button class="secondary" id="playBtn" disabled>▶ Play sheet</button>
   <button class="secondary" id="pdfBtn" disabled>Save PDF</button>
   <button class="secondary" id="abcBtn" disabled>ABC</button>
   <button class="secondary" id="midBtn" disabled>MIDI</button>
@@ -166,6 +175,7 @@ function render() {
     $('sheet').innerHTML = `<div class="empty">${notes.length} notes were received, but none landed after the count-in. Start playing after the 4 count-in clicks.</div>`;
     return;
   }
+  if (synth) stopPlayback();
   try {
     [visual] = ABCJS.renderAbc('sheet', r.abc, { responsive: 'resize', add_classes: true, paddingleft: 0, paddingright: 0 });
   } catch (e) {
@@ -219,10 +229,11 @@ navigator.permissions?.query({ name: 'midi' }).then((st) => { if (st.state === '
 
 // ---------- metronome + recording ----------
 function click(time, accent) {
+  const quiet = $('click').value === 'quiet';
   const o = audio.createOscillator(), g = audio.createGain();
-  o.frequency.value = accent ? 1500 : 1000;
+  o.frequency.value = quiet ? (accent ? 900 : 700) : accent ? 1500 : 1000;
   g.gain.setValueAtTime(0.0001, time);
-  g.gain.exponentialRampToValueAtTime(0.6, time + 0.002);
+  g.gain.exponentialRampToValueAtTime(quiet ? 0.12 : 0.6, time + 0.002);
   g.gain.exponentialRampToValueAtTime(0.0001, time + 0.06);
   o.connect(g).connect(audio.destination);
   o.start(time); o.stop(time + 0.07);
@@ -242,10 +253,11 @@ async function start() {
   crossMarks = []; $('crossBtn').hidden = false; crossLabel();
   $('beat').innerHTML = '<i></i>'.repeat(beats);
   let k = 0;
-  const keepClicking = $('click').value === '1';
+  const mode = $('click').value; // '1' on, 'quiet', '0' count-in only, 'silent'
+  const audible = (k) => mode !== 'silent' && (k < beats || mode === '1' || mode === 'quiet');
   timer = setInterval(() => {
     while (aStart + k * beatSec < audio.currentTime + 0.2) {
-      if (k < beats || keepClicking) click(aStart + k * beatSec, k % beats === 0);
+      if (audible(k)) click(aStart + k * beatSec, k % beats === 0);
       const idx = k % beats, delay = (aStart + k * beatSec - audio.currentTime) * 1000, countIn = k < beats;
       setTimeout(() => {
         [...$('beat').children].forEach((d, i) => d.classList.toggle('hit', i === idx));
@@ -301,19 +313,38 @@ $('pdfBtn').onclick = () => print();
 // exactly what the piano sent (ms from bar 1) + settings, so a take can be re-checked offline
 $('rawBtn').onclick = () => download(fname() + '-raw.json', JSON.stringify({ settings: opts(), notes }), 'application/json');
 
-let synth;
+// Plays the written sheet (not the recording), highlighting each note as it sounds,
+// so you can hear whether the notation is right.
+let synth, follow;
+function stopPlayback() {
+  synth?.stop(); follow?.stop();
+  synth = follow = null;
+  document.querySelectorAll('#sheet .playing').forEach((e) => e.classList.remove('playing'));
+  $('playBtn').textContent = '▶ Play sheet';
+}
 $('playBtn').onclick = async () => {
-  if (synth) { synth.stop(); synth = null; $('playBtn').textContent = '▶ Play'; return; }
+  if (synth) return stopPlayback();
+  if (!visual) return;
+  $('playBtn').textContent = 'Loading piano…';
   try {
     audio = audio || new AudioContext(); await audio.resume();
     synth = new ABCJS.synth.CreateSynth();
-    await synth.init({ visualObj: visual, audioContext: audio, millisecondsPerMeasure: visual.millisecondsPerMeasure() });
+    // options: {} is required: abcjs 6.4 reads options.swing without a guard
+    await synth.init({ visualObj: visual, audioContext: audio, millisecondsPerMeasure: visual.millisecondsPerMeasure(), options: {} });
     await synth.prime();
-    synth.start();
+    follow = new ABCJS.TimingCallbacks(visual, {
+      eventCallback: (ev) => {
+        document.querySelectorAll('#sheet .playing').forEach((e) => e.classList.remove('playing'));
+        if (!ev) { stopPlayback(); return; } // reached the end
+        ev.elements.forEach((group) => group.forEach((el) => el.classList.add('playing')));
+      },
+    });
+    synth.start(); follow.start();
     $('playBtn').textContent = '■ Stop';
   } catch (e) {
-    synth = null;
-    $('info').textContent = 'Playback needs an internet connection the first time (piano sounds download).';
+    stopPlayback();
+    const msg = e?.message || (Array.isArray(e) ? e.map((x) => x?.message || x?.status || x).join(', ') : String(e));
+    $('info').textContent = navigator.onLine ? `Couldn't play the sheet: ${msg}` : 'Playback needs an internet connection the first time (the piano sound downloads once).';
   }
 };
 
