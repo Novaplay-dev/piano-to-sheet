@@ -44,10 +44,16 @@
   #sheetWrap .empty { color: #8a8174; text-align: center; padding: 50px 10px; font: italic 16px Georgia, serif; }
   details summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 4px 0; }
   .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  #printSheet { display: none; }
   @media print {
+    @page { size: A4 portrait; margin: 12mm; }
     body { background: #fff; padding: 0; }
-    header, .panel, .noprint { display: none !important; }
-    #sheetWrap { padding: 0; border-radius: 0; }
+    header, .panel, .noprint, #sheetWrap { display: none !important; }
+    /* one picture per line of music: a line is never cut by a page break */
+    /* abcjs makes the container inline-block, which Chrome won't split across pages (it clips) */
+    #printSheet { display: block !important; overflow: visible !important; color: #000; }
+    #printSheet > div { display: block; break-inside: avoid; page-break-inside: avoid; }
+    #printSheet svg { display: block; width: 100%; height: auto; margin-bottom: 3mm; }
   }
 </style>
 </head>
@@ -126,6 +132,7 @@
   <button class="secondary" id="shorterBtn">Notes look too long → ÷2</button>
 </div>
 <div id="sheetWrap"><div id="sheet"><div class="empty">Your sheet music appears here.</div></div></div>
+<div id="printSheet"></div>
 
 <div class="row noprint" style="margin-top:12px">
   <button class="secondary" id="playBtn" disabled>▶ Play sheet</button>
@@ -378,7 +385,14 @@ function download(name, data, type) {
 const fname = () => ($('title').value || 'song').replace(/[^\w-]+/g, '_');
 $('abcBtn').onclick = () => download(fname() + '.abc', lastAbc, 'text/plain');
 $('midBtn').onclick = () => download(fname() + '.mid', ABCJS.synth.getMidiFile(lastAbc, { midiOutputType: 'binary' })[0], 'audio/midi');
-$('pdfBtn').onclick = () => print();
+// Print / PDF: a separate layout (4 bars per line, one SVG per line, A4)
+function preparePrint() {
+  if (!notes.length) return;
+  const r = transcribe(notes, { ...opts(), barsPerLine: 4 });
+  if (r.abc) ABCJS.renderAbc('printSheet', r.abc, { oneSvgPerLine: true, responsive: 'resize', paddingleft: 0, paddingright: 0 });
+}
+addEventListener('beforeprint', preparePrint); // also when printing from the browser menu
+$('pdfBtn').onclick = () => { preparePrint(); print(); };
 // exactly what the piano sent (ms from bar 1) + settings, so a take can be re-checked offline
 $('rawBtn').onclick = () => download(fname() + '-raw.json', JSON.stringify({ settings: opts(), notes }), 'application/json');
 

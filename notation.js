@@ -608,13 +608,14 @@ export function applyCrossMarks(q, cross, msPerTick, bar, free = false) {
     const before = q.filter((n) => n.s < M), after = q.filter((n) => n.s >= M);
     if (!after.length) continue;
     const next = Math.min(...after.map((n) => n.s));
-    // free playing: the pause length means nothing, so the next part starts exactly on the bar
-    // after the last struck note (a key still held through the pause is cut there)
-    const prevEnd = !before.length ? 0 : free ? Math.max(...before.map((n) => n.s)) + 1 : Math.max(...before.map((n) => n.e));
+    // The pause to cross hands means nothing musically: the next part starts exactly on the
+    // bar after the last struck note (a key still held through the pause is cut there).
+    void free; // same in metronome and free mode
+    const prevEnd = before.length ? Math.max(...before.map((n) => n.s)) + 1 : 0;
     const start = Math.ceil(prevEnd / bar) * bar;
-    const cut = free ? next - start : Math.floor(next / bar) * bar - start;
+    const cut = next - start;
     if (cut <= 0) continue;
-    if (free) for (const n of before) n.e = Math.min(n.e, start);
+    for (const n of before) n.e = Math.min(n.e, start);
     for (const n of after) { n.s -= cut; n.e -= cut; if (n.raw !== undefined) n.raw -= cut; }
     for (let j = i + 1; j < marks.length; j++) marks[j] -= cut;
     marks[i] = next - cut; // the switch happens at the first note after the pause

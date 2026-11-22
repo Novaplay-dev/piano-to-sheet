@@ -107,6 +107,19 @@ assert.equal(abcProblem('X:1\nM:4/4\nL:1/48\nK:C\nV:RH\n[V:RH] (3:2:3z6c6z6 z36 
   assert.deepEqual([...new Set(r.lh.filter((n) => n.s >= 96).map((n) => n.p))].sort(), [79, 81, 83, 84]);
 }
 
+// --- pause cut also when the last key is held through the pause and play resumes mid-bar ---
+for (const free of [false, true]) {
+  const ev = [];
+  [76, 74, 72, 74, 76, 74, 72].forEach((p, i) => ev.push(N(p, i)));
+  ev.push({ p: 72, t: 7 * q, off: 13.3 * q });                    // last note held ~6 beats into the pause
+  [84, 83, 81, 79, 77, 76, 74, 72].forEach((p, i) => ev.push(N(p, 14.5 + i))); // resumes off the bar line
+  const r = transcribe(ev, { bpm, key: C, cross: [9 * q], free });
+  assert.equal(abcProblem(r.abc, r.meter || '4/4'), null, r.abc);
+  const first = Math.min(...[...r.rh, ...r.lh].filter((n) => n.p === 84).map((n) => n.s)); // crossed: may be either hand
+  assert.equal(first % 48, 0, `${free ? 'free' : 'metronome'}: part after the pause starts on a bar\n${r.abc}`);
+  assert.ok(first <= 96, `${free ? 'free' : 'metronome'}: pause removed\n${r.abc}`);
+}
+
 // --- abcjs: parse without warnings, every bar (and each overlay voice) exactly full ---
 const checkAbc = (abc, meter, label) => assert.equal(abcProblem(abc, meter), null, `${label}\n${abc}`);
 
