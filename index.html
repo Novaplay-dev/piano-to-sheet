@@ -45,6 +45,11 @@
   details summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 4px 0; }
   .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
   #printSheet { display: none; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tabs button { flex: 1; background: var(--panel); color: var(--muted); }
+  .tabs button.on { background: var(--accent); color: var(--bg); }
+  #seek { padding: 0; min-height: 32px; margin-top: 10px; accent-color: var(--accent); }
+  #songName { font: 600 17px Georgia, serif; margin: 4px 0 8px; min-height: 22px; }
   @media print {
     @page { size: A4 portrait; margin: 12mm; }
     body { background: #fff; padding: 0; }
@@ -59,13 +64,42 @@
 </head>
 <body>
 <header>
-  <h1>Piano → Sheet</h1>
+  <h1>Piano App</h1>
   <div id="midiStatus">MIDI not connected</div>
 </header>
 
+<div class="row noprint" style="margin-bottom:12px"><button id="connectBtn">Connect piano (MIDI)</button></div>
+<nav class="tabs noprint">
+  <button id="tabRec" class="on">🎼 Write sheet</button>
+  <button id="tabPlay">🎹 Piano plays</button>
+</nav>
+
+<div id="modePlay" hidden>
 <div class="panel">
-  <div class="row"><button id="connectBtn">Connect piano (MIDI)</button></div>
-  <div class="grid" style="margin-top:12px">
+  <label>Play on<select id="outSel"><option value="">— connect the piano first —</option></select></label>
+  <div class="row" style="margin-top:10px">
+    <button class="secondary" id="fileBtn">📂 Open MIDI file</button>
+    <button class="secondary" id="mySheetBtn" disabled>🎼 My sheet</button>
+  </div>
+  <input type="file" id="fileIn" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
+  <div id="songName"></div>
+  <div class="row">
+    <button id="pPlay" disabled>▶ Play</button>
+    <button class="secondary" id="pStop" disabled>■ Stop</button>
+  </div>
+  <input type="range" id="seek" min="0" max="1" step="0.1" value="0" disabled>
+  <div class="grid" style="margin-top:6px">
+    <div id="pTime" style="color:var(--muted);font-size:14px;align-self:center">0:00 / 0:00</div>
+    <label>Speed<select id="speed"><option value="0.5">50 %</option><option value="0.75">75 %</option><option value="0.9">90 %</option><option value="1" selected>100 %</option><option value="1.25">125 %</option></select></label>
+  </div>
+  <p class="hint">Chopin and other classical pieces as free MIDI files: e.g. piano-midi.de (download a .mid, then “Open MIDI file”). Pedal and loudness are played too.</p>
+  <p class="hint">No sound? Turn the piano's volume up, connect a USB cable that carries data, and check the piano's MIDI settings (MIDI in / receive channel 1 on). Keep the screen on while it plays.</p>
+</div>
+</div>
+
+<div id="modeRec">
+<div class="panel">
+  <div class="grid">
     <label>Tempo (beats/min)<input id="bpm" type="number" min="30" max="240" value="" placeholder="auto" inputmode="numeric">
       <button class="secondary" id="tapBtn" type="button" style="min-height:40px;margin-top:4px">👆 Tap tempo</button></label>
     <label>Time signature
@@ -142,6 +176,7 @@
 </div>
 <div class="row noprint" style="margin-top:8px"><button class="secondary" id="rawBtn" disabled>Save raw recording (for checking)</button></div>
 <div class="row noprint" style="margin-top:8px"><button class="secondary" id="demoBtn">Try a demo (no piano needed)</button></div>
+</div>
 
 <script>
   // Show problems on screen instead of a blank page.
@@ -153,6 +188,7 @@
 <script type="module">
 import { transcribe, keyName, METERS } from './notation.js';
 import { SONGS, perform } from './songs.js';
+import { midiEvents, Player } from './player.js';
 
 const $ = (id) => document.getElementById(id);
 const els = ['bpm', 'meter', 'grid', 'heldVoice', 'trip', 'hands', 'lhTop', 'crossFrom', 'key', 'title', 'latency', 'click'];
@@ -284,6 +320,7 @@ async function connect() {
       $('midiStatus').textContent = names.length ? '● ' + names.join(', ') : 'No MIDI device found – plug in & retry';
       $('midiStatus').className = names.length ? 'ok' : '';
       $('recBtn').disabled = !names.length;
+      fillOutputs(access);
     };
     access.onstatechange = bind;
     bind();
@@ -466,6 +503,64 @@ $('demoBtn').onclick = () => {
   render();
   $('demoBtn').textContent = `Demo: ${song.name} — tap for next`;
 };
+
+// ---------- mode 2: the piano plays a MIDI file (or the sheet) ----------
+const player = new Player();
+let outputs = new Map();
+function fillOutputs(access) {
+  outputs = new Map(); access.outputs.forEach((o) => outputs.set(o.id, o));
+  const keep = $('outSel').value || store.get('out');
+  $('outSel').innerHTML = outputs.size ? [...outputs.values()].map((o) => `<option value="${o.id}">${o.name.replace(/</g, '')}</option>`).join('') : '<option value="">— no MIDI output found —</option>';
+  if (outputs.has(keep)) $('outSel').value = keep;
+  updatePlayer();
+}
+$('outSel').onchange = () => { player.pause(); store.set('out', $('outSel').value); updatePlayer(); };
+const mmss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+let wake, uiTimer;
+function updatePlayer() {
+  const has = !!player.song, out = outputs.get($('outSel').value);
+  $('pPlay').disabled = !has || !out; $('pStop').disabled = !has; $('seek').disabled = !has;
+  $('pPlay').textContent = player.playing ? '❚❚ Pause' : '▶ Play';
+  if (has) {
+    const t = player.time() / 1, d = player.song.duration;
+    $('seek').max = d; if (!seeking) $('seek').value = t;
+    $('pTime').textContent = `${mmss(t)} / ${mmss(d)}`;
+  }
+  $('mySheetBtn').disabled = !lastAbc;
+}
+let seeking = false;
+function loadSong(name, bytes) {
+  try {
+    const song = midiEvents(bytes);
+    if (!song.events.some((e) => e.data[0] === 0x90)) throw new Error('No notes in this file');
+    player.load(song); $('songName').textContent = name;
+  } catch (e) { $('songName').textContent = 'Could not open: ' + e.message; }
+  updatePlayer();
+}
+player.onEnd = () => { clearInterval(uiTimer); wake?.release?.(); updatePlayer(); };
+$('pPlay').onclick = async () => {
+  if (player.playing) { player.pause(); clearInterval(uiTimer); wake?.release?.(); return updatePlayer(); }
+  const out = outputs.get($('outSel').value); if (!out) return;
+  player.speed = +$('speed').value;
+  player.play(out);
+  try { wake = await navigator.wakeLock?.request('screen'); } catch {}
+  clearInterval(uiTimer); uiTimer = setInterval(updatePlayer, 250); updatePlayer();
+};
+$('pStop').onclick = () => { player.stop(); clearInterval(uiTimer); wake?.release?.(); updatePlayer(); };
+$('seek').oninput = () => { seeking = true; $('pTime').textContent = `${mmss(+$('seek').value)} / ${mmss(player.song.duration)}`; };
+$('seek').onchange = () => { seeking = false; player.seek(+$('seek').value); updatePlayer(); };
+$('speed').onchange = () => { if (!player.song) return; const t = player.time(), was = player.playing; player.pause(); player.speed = +$('speed').value; player.seek(t); if (was) player.play(player.out); };
+$('fileBtn').onclick = () => $('fileIn').click();
+$('fileIn').onchange = async () => { const f = $('fileIn').files[0]; if (f) loadSong(f.name.replace(/\.midi?$/i, ''), await f.arrayBuffer()); $('fileIn').value = ''; };
+$('mySheetBtn').onclick = () => loadSong($('title').value + ' (my sheet)', ABCJS.synth.getMidiFile(lastAbc, { midiOutputType: 'binary' })[0]);
+function setMode(play) {
+  $('modePlay').hidden = !play; $('modeRec').hidden = play;
+  $('tabPlay').classList.toggle('on', play); $('tabRec').classList.toggle('on', !play);
+  store.set('mode', play ? 'play' : 'rec'); updatePlayer();
+}
+$('tabRec').onclick = () => setMode(false);
+$('tabPlay').onclick = () => setMode(true);
+setMode(store.get('mode') === 'play');
 
 try { render(); } catch (e) { $('info').textContent = 'Error: ' + e.message; }
 window.__appReady = true;
