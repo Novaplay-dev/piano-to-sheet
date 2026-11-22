@@ -1,6 +1,6 @@
 // Offline app shell. Bump VERSION when files change.
-const VERSION = 'v1';
-const FILES = ['./', 'index.html', 'notation.js', 'vendor/abcjs-basic-min.js', 'manifest.json', 'icon.svg', 'icon-192.png', 'icon-512.png'];
+const VERSION = 'v2';
+const FILES = ['./', 'index.html', 'notation.js', 'songs.js', 'vendor/abcjs-basic-min.js', 'manifest.json', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 self.addEventListener('install', (e) => e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())));
 // network first (so updates show up), cache as fallback when offline

@@ -56,9 +56,9 @@
 <div class="panel">
   <div class="row"><button id="connectBtn">Connect piano (MIDI)</button></div>
   <div class="grid" style="margin-top:12px">
-    <label>Tempo (BPM)<input id="bpm" type="number" min="30" max="240" value="80" inputmode="numeric"></label>
+    <label>Tempo (beats/min)<input id="bpm" type="number" min="30" max="240" value="80" inputmode="numeric"></label>
     <label>Time signature
-      <select id="meter"><option>4/4</option><option>3/4</option><option>2/4</option><option>6/8</option></select>
+      <select id="meter"><option>4/4</option><option>3/4</option><option>2/4</option><option>3/8</option><option>6/8</option><option>9/8</option><option>12/8</option></select>
     </label>
     <label>Shortest note
       <select id="grid"><option value="1">16th</option><option value="2">8th</option></select>
@@ -104,7 +104,8 @@
 
 <script src="vendor/abcjs-basic-min.js"></script>
 <script type="module">
-import { transcribe, keyName } from './notation.js';
+import { transcribe, keyName, METERS } from './notation.js';
+import { SONGS, perform } from './songs.js';
 
 const $ = (id) => document.getElementById(id);
 const els = ['bpm', 'meter', 'grid', 'hands', 'key', 'title', 'latency', 'click'];
@@ -204,7 +205,7 @@ async function start() {
   audio = audio || new AudioContext();
   await audio.resume();
   const o = opts();
-  const beats = { '4/4': 4, '3/4': 3, '2/4': 2, '6/8': 2 }[o.meter];
+  const beats = METERS[o.meter].bar / METERS[o.meter].beat; // 6/8 clicks dotted quarters
   const beatSec = 60 / o.bpm;
   const lead = 0.15;
   const aStart = audio.currentTime + lead;
@@ -272,22 +273,15 @@ $('playBtn').onclick = async () => {
   }
 };
 
-// ---------- demo ----------
+// ---------- demo: a humanized performance of a real piece (cycles through them) ----------
+let demoIdx = 0;
 $('demoBtn').onclick = () => {
-  const q = 60000 / (+$('bpm').value || 80);
-  const N = (p, b, l = 1, j = 0) => ({ p, t: b * q + j, off: (b + l) * q - 0.08 * q });
-  const d = [];
-  // RH melody (G major, with a chromatic C# and a tie over the barline); LH broken chords + bass
-  const mel = [[67, 0, 1], [71, 1, .5], [72, 1.5, .5], [74, 2, 1.5], [73, 3.5, .5], [74, 4, 1], [76, 5, .5], [74, 5.5, .5],
-    [72, 6, 1], [71, 7, 2], [69, 9, 1], [67, 10, .5], [66, 10.5, .5], [67, 11, 1], [62, 12, 4]];
-  mel.forEach(([p, b, l], i) => d.push(N(p, b, l, (i % 3 - 1) * 0.04 * q)));
-  [[43, 47, 50], [48, 52, 55], [50, 54, 57], [43, 47, 50]].forEach((ch, bar) => {
-    d.push(N(ch[0] - 12, bar * 4, 2, -0.02 * q));
-    ch.forEach((p, i) => d.push(N(p, bar * 4 + 2 + i * 0.5, 0.5, 0.03 * q)));
-  });
-  d.push(N(67, 12, 4), N(71, 12, 4)); // final RH chord D-G-B over the LH G
-  notes = d.sort((a, b) => a.t - b.t);
+  const song = SONGS[demoIdx++ % SONGS.length];
+  $('bpm').value = song.bpm; $('meter').value = song.meter; $('title').value = song.name;
+  $('key').value = 'auto'; $('hands').value = 'auto';
+  notes = perform(song, Date.now() % 1000).map(({ p, t, off }) => ({ p, t, off }));
   render();
+  $('demoBtn').textContent = `Demo: ${song.name} — tap for next`;
 };
 
 render();
