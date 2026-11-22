@@ -106,6 +106,12 @@
 <div class="row noprint" style="margin-top:8px"><button class="secondary" id="rawBtn" disabled>Save raw recording (for checking)</button></div>
 <div class="row noprint" style="margin-top:8px"><button class="secondary" id="demoBtn">Try a demo (no piano needed)</button></div>
 
+<script>
+  // Show problems on screen instead of a blank page.
+  window.onerror = (msg, src, line) => { const i = document.getElementById('info'); if (i) i.textContent = `Error: ${msg} (${(src || '').split('/').pop()}:${line})`; };
+  window.addEventListener('unhandledrejection', (e) => window.onerror(String(e.reason), '', 0));
+  setTimeout(() => { if (!window.__appReady) { const i = document.getElementById('info'); if (i && !i.textContent.startsWith('Error')) i.textContent = 'The app did not start in this browser. Please open it in Google Chrome (Android) and update Chrome.'; } }, 4000);
+</script>
 <script src="vendor/abcjs-basic-min.js"></script>
 <script type="module">
 import { transcribe, keyName, METERS } from './notation.js';
@@ -116,7 +122,7 @@ const els = ['bpm', 'meter', 'grid', 'hands', 'key', 'title', 'latency', 'click'
 let notes = [];          // [{p, t, off}] ms relative to bar 1 downbeat
 let pending = new Map(); // pitch -> onset
 let crossMarks = [];     // ms from bar 1 where "cross hands" was tapped (each tap toggles)
-let recording = false, t0 = 0, audio, timer, lastAbc = '', visual;
+let recording = false, t0 = 0, audio, timer, lastAbc = '', visual, midiCount = 0;
 
 // key options
 for (let f = -7; f <= 7; f++) for (const minor of [false, true]) {
@@ -156,6 +162,10 @@ function render() {
   if (!has) return;
   const r = transcribe(notes, opts());
   lastAbc = r.abc;
+  if (!r.abc) {
+    $('sheet').innerHTML = `<div class="empty">${notes.length} notes were received, but none landed after the count-in. Start playing after the 4 count-in clicks.</div>`;
+    return;
+  }
   [visual] = ABCJS.renderAbc('sheet', r.abc, { responsive: 'resize', add_classes: true, paddingleft: 0, paddingright: 0 });
   if (!recording && r.key) $('info').textContent = `${notes.length} notes · key ${keyName(r.key)} · RH ${r.rh.length} / LH ${r.lh.length}`;
 }
@@ -164,7 +174,10 @@ function render() {
 function onMidi(e) {
   const [st, p, v] = e.data, cmd = st & 0xf0;
   if (!recording) return;
-  const t = e.timeStamp - t0 - (+$('latency').value || 0) - (audio.outputLatency || audio.baseLatency || 0) * 1000;
+  midiCount++;
+  // Some Android devices stamp MIDI events with another clock (or 0): fall back to "now".
+  const ts = Math.abs(e.timeStamp - performance.now()) < 1000 ? e.timeStamp : performance.now();
+  const t = ts - t0 - (+$('latency').value || 0) - (audio.outputLatency || audio.baseLatency || 0) * 1000;
   if (cmd === 0x90 && v > 0) {
     if (pending.has(p)) notes.push({ p, t: pending.get(p), off: t });
     pending.set(p, t);
@@ -217,7 +230,7 @@ async function start() {
   const aStart = audio.currentTime + lead;
   const pStart = performance.now() + lead * 1000;
   t0 = pStart + beats * beatSec * 1000; // downbeat of bar 1, after the count-in
-  notes = []; pending.clear(); recording = true;
+  notes = []; pending.clear(); recording = true; midiCount = 0;
   crossMarks = []; $('crossBtn').hidden = false; crossLabel();
   $('beat').innerHTML = '<i></i>'.repeat(beats);
   let k = 0;
@@ -228,7 +241,7 @@ async function start() {
       const idx = k % beats, delay = (aStart + k * beatSec - audio.currentTime) * 1000, countIn = k < beats;
       setTimeout(() => {
         [...$('beat').children].forEach((d, i) => d.classList.toggle('hit', i === idx));
-        $('info').textContent = countIn ? `Count-in… ${beats - idx}` : `Recording · ${notes.length} notes${crossMarks.length % 2 ? ' · hands crossed' : ''}`;
+        $('info').textContent = countIn ? `Count-in… ${beats - idx}` : `Recording · ${notes.length} notes (${midiCount} MIDI messages)${crossMarks.length % 2 ? ' · hands crossed' : ''}`;
       }, delay);
       k++;
     }
@@ -248,7 +261,11 @@ function stop() {
   $('crossBtn').hidden = true;
   $('beat').innerHTML = '';
   $('recBtn').classList.remove('on'); $('recLabel').textContent = 'Record again';
-  if (!notes.length) { $('info').textContent = 'No notes received.'; return; }
+  if (!notes.length) {
+    $('info').textContent = midiCount ? `Received ${midiCount} MIDI messages but no complete notes.` : 'No notes received from the piano. Check the cable, then tap Connect again.';
+    $('sheet').innerHTML = '<div class="empty">Nothing recorded.</div>';
+    return;
+  }
   render();
 }
 $('recBtn').onclick = () => (recording ? stop() : start());
@@ -304,7 +321,8 @@ $('demoBtn').onclick = () => {
   $('demoBtn').textContent = `Demo: ${song.name} — tap for next`;
 };
 
-render();
+try { render(); } catch (e) { $('info').textContent = 'Error: ' + e.message; }
+window.__appReady = true;
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
