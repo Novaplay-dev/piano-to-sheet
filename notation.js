@@ -651,6 +651,12 @@ export function transcribe(rawNotes, opts) {
     if (ph) { const sh = (bpb - ph) * msB; rawNotes = rawNotes.map((n) => ({ ...n, t: n.t + sh, off: n.off + sh })); cross = cross.map((c) => c + sh); }
   }
   const m = METERS[meter], g = grid * 3;
+  // started playing during the count-in: keep those notes, the sheet starts whole bars earlier
+  const msBar = (60000 / bpm / m.beat) * m.bar, first = Math.min(...rawNotes.map((n) => n.t));
+  if (!free && first < (-1.5 * msBar) / m.bar) {
+    const sh = Math.ceil(-first / msBar) * msBar;
+    rawNotes = rawNotes.map((n) => ({ ...n, t: n.t + sh, off: n.off + sh })); cross = cross.map((c) => c + sh);
+  }
   const q = applyCrossMarks(quantize(rawNotes, { bpm, meter, grid, triplets }), cross, 60000 / bpm / m.beat, m.bar, free);
   if (!q.length) return { abc: '', key: null };
   const k = key === 'auto' ? detectKey(q) : key;

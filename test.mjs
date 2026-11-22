@@ -190,4 +190,15 @@ for (const s of SONGS) {
   assert.equal(s.result.key, 1, `${s.name}: key`);
 }
 
+// started playing during the count-in (metronome mode): nothing is dropped, sheet starts a bar earlier
+{
+  const early = [{ p: 60, t: -1000, off: -500 }, { p: 64, t: 0, off: 500 }, { p: 67, t: 500, off: 1000 }];
+  const r = transcribe(early, { bpm: 60, meter: '4/4', barsPerLine: 4 });
+  assert.equal(r.rh.length + r.lh.length, 3, 'count-in notes kept');
+  assert.ok(r.abc.includes('z24 z12 C6'), 'count-in note on beat 4 of an extra bar');
+  // a slightly early first note still starts bar 1
+  const r2 = transcribe([{ p: 60, t: -40, off: 500 }], { bpm: 60, meter: '4/4' });
+  assert.ok(!r2.abc.includes('z24 z12'), 'slightly early note not shifted');
+}
+
 console.log('all tests passed');
