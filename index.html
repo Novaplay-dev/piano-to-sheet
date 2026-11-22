@@ -57,8 +57,10 @@
     /* one picture per line of music: a line is never cut by a page break */
     /* abcjs makes the container inline-block, which Chrome won't split across pages (it clips) */
     #printSheet { display: block !important; overflow: visible !important; color: #000; }
-    #printSheet > div { display: block; break-inside: avoid; page-break-inside: avoid; }
-    #printSheet svg { display: block; width: 100%; height: auto; margin-bottom: 3mm; }
+    #printSheet .page { display: block; break-after: page; page-break-after: always; }
+    #printSheet .page:last-child { break-after: auto; page-break-after: auto; }
+    #printSheet .page > div { display: block; break-inside: avoid; page-break-inside: avoid; overflow: visible !important; }
+    #printSheet svg { display: block !important; width: 100%; height: auto; margin-bottom: 3mm; }
   }
 </style>
 </head>
@@ -426,7 +428,20 @@ $('midBtn').onclick = () => download(fname() + '.mid', ABCJS.synth.getMidiFile(l
 function preparePrint() {
   if (!notes.length) return;
   const r = transcribe(notes, { ...opts(), barsPerLine: 4 });
-  if (r.abc) ABCJS.renderAbc('printSheet', r.abc, { oneSvgPerLine: true, responsive: 'resize', paddingleft: 0, paddingright: 0 });
+  if (!r.abc) return;
+  const box = $('printSheet');
+  ABCJS.renderAbc(box, r.abc, { oneSvgPerLine: true, responsive: 'resize', paddingleft: 0, paddingright: 0 });
+  // Make the pages ourselves: whole lines per page, then a forced page break.
+  // (Chrome on Android doesn't keep a line together with break-inside alone.)
+  // ponytail: sized for A4 with 12 mm margins (186 mm wide), 230 mm used of 273 so Letter or other margins still fit
+  const lines = [...box.children];
+  let page = null, used = 1e9;
+  for (const line of lines) {
+    const vb = line.querySelector('svg')?.viewBox?.baseVal;
+    const h = vb && vb.width ? (186 * vb.height) / vb.width + 3 : 40;
+    if (used + h > 230) { page = document.createElement('div'); page.className = 'page'; box.appendChild(page); used = 0; }
+    page.appendChild(line); used += h;
+  }
 }
 addEventListener('beforeprint', preparePrint); // also when printing from the browser menu
 $('pdfBtn').onclick = () => { preparePrint(); print(); };
