@@ -191,6 +191,7 @@
 import { transcribe, keyName, METERS } from './notation.js';
 import { SONGS, perform } from './songs.js';
 import { midiEvents, Player } from './player.js';
+import { sheetPdf } from './pdf.js';
 
 const $ = (id) => document.getElementById(id);
 const els = ['bpm', 'meter', 'grid', 'heldVoice', 'trip', 'hands', 'lhTop', 'crossFrom', 'key', 'title', 'latency', 'click'];
@@ -444,7 +445,16 @@ function preparePrint() {
   }
 }
 addEventListener('beforeprint', preparePrint); // also when printing from the browser menu
-$('pdfBtn').onclick = () => { preparePrint(); print(); };
+$('pdfBtn').onclick = async () => {
+  preparePrint();
+  $('pdfBtn').disabled = true; $('pdfBtn').textContent = 'Making PDF…';
+  try {
+    const { bytes, pages } = await sheetPdf([...document.querySelectorAll('#printSheet svg')]);
+    download(fname() + '.pdf', bytes, 'application/pdf');
+    $('info').textContent = `PDF saved (${pages} page${pages > 1 ? 's' : ''}) – look in Downloads.`;
+  } catch (e) { $('info').textContent = 'Could not make the PDF: ' + e.message; }
+  $('pdfBtn').disabled = false; $('pdfBtn').textContent = 'Save PDF';
+};
 // exactly what the piano sent (ms from bar 1) + settings, so a take can be re-checked offline
 $('rawBtn').onclick = () => download(fname() + '-raw.json', JSON.stringify({ settings: opts(), notes }), 'application/json');
 
