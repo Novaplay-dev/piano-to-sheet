@@ -47,7 +47,7 @@ export const SONGS = [
              C4 .5, A4 .5, F4 .5, A4 .5, C4 .5, G4 .5, E4 .5, G4 .5, B3 .5, G4 .5, D4 .5, G4 .5, C4 .5, G4 .5, E4 .5, G4 .5`),
   },
   {
-    name: 'Moonlight Sonata (Beethoven)', meter: '4/4', bpm: 54, key: 'C#m',
+    name: 'Moonlight Sonata (Beethoven)', meter: '2/2', bpm: 27, key: 'C#m',
     rh: seq([rep(tri('G#3', 'C#4', 'E4'), 8), rep(tri('A3', 'C#4', 'E4'), 2), rep(tri('A3', 'D4', 'F#4'), 2),
              tri('G#3', 'B#3', 'F#4'), tri('G#3', 'C#4', 'E4'), tri('G#3', 'C#4', 'D#4'), tri('F#3', 'B#3', 'D#4')].join(', ')),
     lh: seq(`[C#2 C#3] 4, [B1 B2] 4, [A1 A2] 2, [F#1 F#2] 2, [G#1 G#2] 4`),
@@ -73,7 +73,7 @@ function rng(seed) {
 // -> [{p, t, off, hand}] in ms. Quarter-note length follows the meter's beat (bpm counts beats).
 export function perform(song, seed = 1, { jitter = 22 } = {}) {
   const r = rng(seed), u = (a) => (r() * 2 - 1) * a;
-  const beatQ = { '3/8': 0.5, '6/8': 1.5, '9/8': 1.5, '12/8': 1.5 }[song.meter] || 1;
+  const beatQ = { '3/8': 0.5, '6/8': 1.5, '9/8': 1.5, '12/8': 1.5, '2/2': 2 }[song.meter] || 1;
   const msQ = 60000 / song.bpm / beatQ;
   const chordShift = new Map(); // same onset in one hand rolls slightly
   const out = [];

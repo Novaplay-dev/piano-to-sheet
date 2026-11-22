@@ -1,6 +1,6 @@
 // Run: node test.mjs        (add --verbose to print every transcription)
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { abcProblem } from './eval/abccheck.js';
 import { METERS, metricPieces, spell, transcribe, quantize, keyName } from './notation.js';
 import { SONGS, perform } from './songs.js';
 
@@ -27,6 +27,9 @@ assert.deepEqual(P(2, 6, m44, true), [2, 4]);
 assert.deepEqual(P(0, 12, m34, true), [12]);   // full-bar rest
 assert.deepEqual(metricPieces(4, 8, m44), [8]);   // triplet quarter on 2nd triplet 8th
 assert.deepEqual(metricPieces(8, 8, m44), [4, 4]); // triplet value can't cross the beat
+assert.deepEqual(metricPieces(9, 7, METERS['2/2']), [3, 4]);  // 2/2: straight 16th, then triplet 8th of the next quarter
+assert.deepEqual(metricPieces(4, 20, METERS['2/2']), [8, 12]); // 2/2: triplet part stays in its quarter
+assert.deepEqual(metricPieces(12, 24, METERS['2/2']), [12, 12]); // 2/2: half note across the half-bar -> tied quarters
 
 // --- spelling ---
 assert.deepEqual(spell(66, 1), { l: 'F', acc: 1, octave: 4 });   // F# in G
@@ -75,30 +78,7 @@ const C = { fifths: 0, minor: false };
 }
 
 // --- abcjs: parse without warnings, every bar (and each overlay voice) exactly full ---
-globalThis.window = globalThis;
-const mod = { exports: {} };
-new Function('module', 'exports', readFileSync(new URL('./vendor/abcjs-basic-min.js', import.meta.url), 'utf8'))(mod, mod.exports);
-const ABCJS = mod.exports;
-function checkAbc(abc, meter, label) {
-  const [tune] = ABCJS.parseOnly(abc);
-  assert.equal(tune.warnings, undefined, `${label}: abcjs warnings ${tune.warnings}\n${abc}`);
-  const bar = METERS[meter].bar;
-  for (const line of abc.split('\n').filter((l) => l.startsWith('[V:'))) {
-    for (const b of line.slice(6).replace('|]', '').split('|').filter((x) => x.trim())) {
-      for (const voice of b.split('&')) {
-        let total = 0, tripLeft = 0;
-        const re = /\(3:2:(\d+)|(\[[^\]]*\]|[_=^]*[A-Ga-gzx][,']*)(\d*)/g;
-        for (const x of voice.matchAll(re)) {
-          if (x[1]) { tripLeft = +x[1]; continue; }
-          let d = Number(x[3] || 1);
-          if (tripLeft > 0) { d = (d * 2) / 3; tripLeft--; }
-          total += d;
-        }
-        assert.equal(total, bar, `${label} bar "${voice}"\n${abc}`);
-      }
-    }
-  }
-}
+const checkAbc = (abc, meter, label) => assert.equal(abcProblem(abc, meter), null, `${label}\n${abc}`);
 
 // --- round trip on real pieces: score -> humanized performance -> transcription ---
 // Checks every note lands in the right hand, at the right time, with the right written length.

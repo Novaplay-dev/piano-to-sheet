@@ -6,6 +6,7 @@ export const METERS = {
   '4/4': { bar: 48, beat: 12, strong: [24], q: '1/4' },
   '3/4': { bar: 36, beat: 12, strong: [], q: '1/4' },
   '2/4': { bar: 24, beat: 12, strong: [], q: '1/4' },
+  '2/2': { bar: 48, beat: 24, strong: [], q: '1/2' }, // cut time
   '3/8': { bar: 18, beat: 6, strong: [], q: '1/8', beamBar: true }, // 3/8 beams the whole bar
   '6/8': { bar: 36, beat: 18, strong: [], q: '3/8', compound: true },
   '9/8': { bar: 54, beat: 18, strong: [], q: '3/8', compound: true },
@@ -15,6 +16,11 @@ export const METERS = {
 // Plain + dotted values: 16th, 8th, dotted 8th, quarter, dotted quarter, half, dotted half, whole.
 const REP = [3, 6, 9, 12, 18, 24, 36, 48];
 const TRIP = [4, 8]; // triplet 8th / triplet quarter (only inside a triplet beat)
+// Triplet-detection costs (squared-tick units): switching feel, starting in triplets,
+// per-beat triplet prior, extra cost of an off-beat 16th. Tuned on real performances (eval/).
+// Hand-split costs (see splitHands). Tuned on real performances (eval/).
+export const HANDS = { dist: 0.5, window: 12, busyHand: 4, balance: 3, cross: 15, follow: 0.5, heldSoft: 1.5, busyHard: 2, busySoft: 1, lhTop: 67, rhBottom: 53, reg: 0.6 };
+export const TRIPLET = { switch: 8, start: 1, prior: 0.1, odd: 0.8 };
 
 // ---------- 1. quantize ----------
 // notes: [{p: midi pitch, t: onset ms, off: release ms}] with t=0 at the downbeat of bar 1.
@@ -23,37 +29,48 @@ const TRIP = [4, 8]; // triplet 8th / triplet quarter (only inside a triplet bea
 export function quantize(notes, { bpm, meter, grid = 1, triplets = true }) {
   const m = METERS[meter], g = grid * 3;
   const msPerTick = 60000 / bpm / m.beat;
-  const raw = notes.map((n) => ({ p: n.p, s: n.t / msPerTick, e: n.off / msPerTick }));
-  const beatOf = (x) => Math.floor((x + 1.5) / m.beat);
+  const raw = notes.map((n) => ({ p: n.p, s: n.t / msPerTick, e: n.off / msPerTick, id: n.id }));
+  // triplets are decided per quarter note (12 ticks) in every simple meter
+  const beatOf = (x) => Math.floor((x + 1.5) / 12);
   const err = (x, gg) => Math.abs(x - Math.round(x / gg) * gg);
   const trip = new Set();
-  if (triplets && !m.compound && m.beat === 12) {
+  if (triplets && !m.compound && m.bar % 12 === 0) {
     const off = new Map();
     for (const n of raw) {
-      const b = beatOf(n.s), x = n.s - b * m.beat;
+      const b = beatOf(n.s), x = n.s - b * 12;
       if (!off.has(b)) off.set(b, []);
       off.get(b).push(x);
     }
-    // Squared snap error + a simplicity prior: off-beat 16ths and starting a triplet run
-    // each cost a little, so only onsets that really sit on thirds become triplets.
-    for (const b of [...off.keys()].sort((x, y) => x - y)) {
-      const xs = off.get(b);
-      if (!xs.some((x) => Math.round(x / 4) % 3)) continue; // nothing on a triplet 2nd/3rd 8th
-      const eb = xs.reduce((s, x) => s + err(x, g) ** 2 + (Math.round(x / g) * g % 6 ? 0.3 : 0), 0);
-      const et = xs.reduce((s, x) => s + err(x, 4) ** 2, 0) + (trip.has(b - 1) ? 0 : 0.3);
-      if (et < eb) trip.add(b);
+    // Per beat: squared snap error to the straight grid (off-beat 16ths cost a little extra,
+    // simpler rhythms are likelier) vs to triplet 8ths. A 2-state Viterbi over the beats adds
+    // a cost for switching feel, so triplet/straight passages stay consistent.
+    const bs = [...off.keys()];
+    const lo = Math.min(...bs), hi = Math.max(...bs), T = TRIPLET;
+    let cost = [0, T.start], back = [];
+    for (let b = lo; b <= hi; b++) {
+      const xs = off.get(b) || [];
+      const eb = xs.reduce((s, x) => s + err(x, g) ** 2 + (Math.round(x / g) * g % 6 ? T.odd : 0), 0);
+      const et = xs.reduce((s, x) => s + err(x, 4) ** 2, 0) + (xs.length ? T.prior : 0);
+      const fromB = [cost[0], cost[1] + T.switch], fromT = [cost[0] + T.switch, cost[1]];
+      const pb = fromB[0] <= fromB[1] ? 0 : 1, pt = fromT[0] <= fromT[1] ? 0 : 1;
+      back.push([pb, pt]);
+      cost = [fromB[pb] + eb, fromT[pt] + et];
+    }
+    for (let st = cost[0] <= cost[1] ? 0 : 1, b = hi; b >= lo; b--) {
+      if (st) trip.add(b);
+      st = back[b - lo][st];
     }
   }
   const gridAt = (x) => (trip.has(beatOf(x)) ? 4 : g);
   const q = (x) => {
     const b = beatOf(x), gg = gridAt(x);
-    return b * m.beat + Math.round((x - b * m.beat) / gg) * gg;
+    return b * 12 + Math.round((x - b * 12) / gg) * gg;
   };
   return raw
     .map((n) => {
       const s = q(n.s);
       // releases come early far more often than late, so round them up a little
-      return { p: n.p, s, e: Math.max(q(n.e + 0.15 * gridAt(n.e)), s + gridAt(s)), held: n.e - n.s };
+      return { p: n.p, s, e: Math.max(q(n.e + 0.15 * gridAt(n.e)), s + gridAt(s)), held: n.e - n.s, id: n.id };
     })
     .filter((n) => n.s >= 0)
     .sort((a, b) => a.s - b.s || a.p - b.p);
@@ -71,29 +88,30 @@ export function splitHands(qnotes, { mode = 'auto', splitPoint = 60, beam = 24 }
   }
   const groups = groupBy(qnotes, (n) => n.s);
   // state: {c, lpos, rpos, lheld, rheld, pick: {k, prev}} (pick = linked list of choices)
+  const W = HANDS;
   let states = [{ c: 0, lpos: 50, rpos: 70, lheld: [], rheld: [], pick: null }];
   for (const g of groups) {
     const s = g[0].s, next = [];
     for (const st of states) {
       // keep notes that still sound, or were struck within the last quarter (the hand is still there)
-      const busyL = st.lheld.filter((n) => n.e > s || n.s + 12 > s), busyR = st.rheld.filter((n) => n.e > s || n.s + 12 > s);
+      const busyL = st.lheld.filter((n) => n.e > s || n.s + W.window > s), busyR = st.rheld.filter((n) => n.e > s || n.s + W.window > s);
       const heldL = busyL.filter((n) => n.e > s), heldR = busyR.filter((n) => n.e > s);
       for (let k = 0; k <= g.length; k++) {
         const l = g.slice(0, k), r = g.slice(k);
-        if (l.length > 5 || r.length > 5) continue;
-        let c = st.c + handCost(l, busyL, heldL, st.lpos, 'L') + handCost(r, busyR, heldR, st.rpos, 'R');
+        let c = st.c + (Math.max(0, l.length - 5) + Math.max(0, r.length - 5)) * 50; // max 5 fingers
+        c += handCost(l, busyL, heldL, st.lpos, 'L') + handCost(r, busyR, heldR, st.rpos, 'R');
         // attacking while holding a key is harder than using the free hand
-        if (l.length && heldL.length && !heldR.length) c += 4;
-        if (r.length && heldR.length && !heldL.length) c += 4;
+        if (l.length && heldL.length && !heldR.length) c += W.busyHand;
+        if (r.length && heldR.length && !heldL.length) c += W.busyHand;
         // big chords are shared between the hands (4-part writing: 2 + 2, not 3 + 1)
-        if (l.length && r.length) c += Math.max(0, Math.abs(l.length - r.length) - 1) * 3;
+        if (l.length && r.length) c += Math.max(0, Math.abs(l.length - r.length) - 1) * W.balance;
         // a hand can't play through the other hand's held keys
-        if (l.length && heldR.length && l[l.length - 1].p > Math.min(...heldR.map((n) => n.p))) c += 15;
-        if (r.length && heldL.length && r[0].p < Math.max(...heldL.map((n) => n.p))) c += 15;
+        if (l.length && heldR.length && l[l.length - 1].p > Math.min(...heldR.map((n) => n.p))) c += W.cross;
+        if (r.length && heldL.length && r[0].p < Math.max(...heldL.map((n) => n.p))) c += W.cross;
         next.push({
           c,
-          lpos: l.length ? (st.lpos + mean(l)) / 2 : st.lpos,
-          rpos: r.length ? (st.rpos + mean(r)) / 2 : st.rpos,
+          lpos: l.length ? st.lpos + (mean(l) - st.lpos) * W.follow : st.lpos,
+          rpos: r.length ? st.rpos + (mean(r) - st.rpos) * W.follow : st.rpos,
           lheld: [...busyL, ...l],
           rheld: [...busyR, ...r],
           pick: { k, prev: st.pick },
@@ -114,15 +132,16 @@ function handCost(ns, busy, held, pos, side) {
   if (!ns.length) return 0;
   const ps = ns.map((n) => n.p);
   let c = 0;
-  for (const p of ps) c += Math.abs(p - pos) * 0.5;
+  const W = HANDS;
+  for (const p of ps) c += Math.abs(p - pos) * W.dist;
   const stretch = (others, hard, soft) => {
     const all = [...ps, ...others.map((n) => n.p)];
     const span = Math.max(...all) - Math.min(...all);
     return span > 16 ? (span - 16) * hard + 4 * soft : span > 12 ? (span - 12) * soft : 0;
   };
-  c += stretch(held, 12, 1.5);              // keys held down right now: a hard limit
-  c += stretch(busy, 2, 1);                  // keys just played: the hand would have to jump
-  for (const p of ps) c += side === 'L' ? Math.max(0, p - 67) * 0.6 : Math.max(0, 53 - p) * 0.6;
+  c += stretch(held, 12, W.heldSoft);       // keys held down right now: a hard limit
+  c += stretch(busy, W.busyHard, W.busySoft); // keys just played: the hand would have to jump
+  for (const p of ps) c += side === 'L' ? Math.max(0, p - W.lhTop) * W.reg : Math.max(0, W.rhBottom - p) * W.reg;
   return c;
 }
 
@@ -164,10 +183,13 @@ export function toVoice(notes, grid = 3, beat = 12, bar = 48) {
 // ---------- 4. meter rules: bars, ties, beat grouping ----------
 const crosses = (o, end, b) => b > o && b < end;
 const inOneBeat = (o, L, m) => Math.floor(o / m.beat) === Math.floor((o + L - 1) / m.beat);
-const tripOk = (o, L, m) => TRIP.includes(L) && o % 4 === 0 && inOneBeat(o, L, m);
+const tripOk = (o, L) => TRIP.includes(L) && o % 4 === 0 && Math.floor(o / 12) === Math.floor((o + L - 1) / 12);
+
+// anything touching a triplet position must stay inside its quarter note (matters in 2/2)
+const tripletish = (o, L) => o % 3 || L % 3;
 
 function noteOk(o, L, m) {
-  if (tripOk(o, L, m)) return true;
+  if (tripletish(o, L)) return tripOk(o, L);
   if (!REP.includes(L)) return false;
   if (inOneBeat(o, L, m)) return true;
   // A note may span beats only when it starts on a beat, does not hide the middle of a
@@ -180,7 +202,7 @@ function noteOk(o, L, m) {
 
 function restOk(o, L, m) {
   if (o === 0 && L === m.bar) return true; // whole-bar rest
-  if (tripOk(o, L, m)) return true;
+  if (tripletish(o, L)) return tripOk(o, L);
   if (!REP.includes(L)) return false;
   if (m.strong.length && L === m.strong[0] && o % L === 0) return true; // half rest on beat 1 or 3
   return inOneBeat(o, L, m); // otherwise rests never cross a beat
@@ -195,6 +217,10 @@ export function metricPieces(o, L, m, rest = false) {
   if (b === undefined) {
     const nb = (Math.floor(o / m.beat) + 1) * m.beat;
     if (nb < end) b = nb;
+  }
+  if (b === undefined && tripletish(o, L)) {
+    const nq = (Math.floor(o / 12) + 1) * 12;
+    if (nq < end) b = nq;
   }
   if (b === undefined) {
     // Inside one beat: split at the 8th grid first, else the largest value that fits.
@@ -265,7 +291,8 @@ export function detectKey(qnotes) {
     const minor = min > maj;
     const acc = minor ? out((tonic + 8) % 12) : out(-1); // leading tone of the relative minor
     const cand = { acc, r: Math.max(maj, min), fifths: f, minor };
-    if (!best || acc < best.acc || (acc === best.acc && cand.r > best.r)) best = cand;
+    // enharmonic twins (B major / Cb major) score identically: keep the one with fewer accidentals
+    if (!best || acc < best.acc || (acc === best.acc && (cand.r > best.r + 1e-9 || (Math.abs(cand.r - best.r) <= 1e-9 && Math.abs(f) < Math.abs(best.fifths))))) best = cand;
   }
   return { fifths: best.fifths, minor: best.minor };
 }
@@ -352,11 +379,11 @@ function barAbc(evs, m, invisibleRests) {
     const atBeat = ev.o % m.beat === 0 && !m.beamBar && !joinBeams(evs, ev.o, m);
     if (i && (atBeat || !ev.pitches || !evs[i - 1].pitches)) out += ' '; // beams break at beats and rests
     let scale = 1;
-    if (ev.o % m.beat === 0 || i === 0) {
-      const beatEvs = evs.filter((e) => Math.floor(e.o / m.beat) === Math.floor(ev.o / m.beat));
-      if (isTripletBeat(beatEvs)) out += `(3:2:${beatEvs.length}`;
+    const quarterEvs = evs.filter((e) => Math.floor(e.o / 12) === Math.floor(ev.o / 12)); // triplet group
+    if (isTripletBeat(quarterEvs)) {
+      scale = 1.5;
+      if (ev === quarterEvs[0]) out += (i && !out.endsWith(' ') ? ' ' : '') + `(3:2:${quarterEvs.length}`;
     }
-    if (isTripletBeat(evs.filter((e) => Math.floor(e.o / m.beat) === Math.floor(ev.o / m.beat)))) scale = 1.5;
     const len = ev.L * scale;
     if (!ev.pitches) { out += (invisibleRests ? 'x' : 'z') + len; continue; }
     out += (ev.acc.length > 1 ? `[${ev.acc.join('')}]` : ev.acc[0]) + len + (ev.tie ? '-' : '');
