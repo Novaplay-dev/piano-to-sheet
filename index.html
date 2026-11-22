@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Piano to Sheet</title>
+<meta name="theme-color" content="#1d1b18">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #1d1b18; --panel: #2a2723; --ink: #f3ede2; --muted: #a59d90;
+    --accent: #e8b04a; --rec: #e0533d; --paper: #fbf8f1; --line: #3a362f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.4 system-ui, sans-serif;
+    padding: env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom)); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 14px 0 10px; }
+  h1 { font: 600 20px/1 Georgia, serif; margin: 0; letter-spacing: .3px; }
+  #midiStatus { font-size: 13px; color: var(--muted); text-align: right; }
+  #midiStatus.ok { color: #8fd18a; }
+  .panel { background: var(--panel); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  select, input { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; min-height: 44px; width: 100%; }
+  button { font: 600 16px system-ui, sans-serif; border: 0; border-radius: 12px; min-height: 48px; padding: 0 16px; cursor: pointer; color: var(--bg); background: var(--accent); }
+  button.secondary { background: var(--line); color: var(--ink); }
+  button:disabled { opacity: .45; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > button { flex: 1 1 auto; }
+  #recBtn { width: 100%; min-height: 64px; font-size: 20px; background: var(--rec); color: #fff; display: flex; align-items: center; justify-content: center; gap: 10px; }
+  #recBtn .dot { width: 14px; height: 14px; border-radius: 50%; background: #fff; }
+  #recBtn.on .dot { border-radius: 3px; }
+  #beat { display: flex; gap: 6px; justify-content: center; margin-top: 10px; min-height: 12px; }
+  #beat i { width: 12px; height: 12px; border-radius: 50%; background: var(--line); }
+  #beat i.hit { background: var(--accent); }
+  #info { font-size: 14px; color: var(--muted); margin-top: 8px; text-align: center; min-height: 20px; }
+  #sheetWrap { background: var(--paper); border-radius: 14px; padding: 8px; min-height: 160px; color: #222; overflow: hidden; }
+  #sheetWrap .empty { color: #8a8174; text-align: center; padding: 50px 10px; font: italic 16px Georgia, serif; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 4px 0; }
+  .hint { font-size: 13px; color: var(--muted); margin: 8px 0 0; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    header, .panel, .noprint { display: none !important; }
+    #sheetWrap { padding: 0; border-radius: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Piano → Sheet</h1>
+  <div id="midiStatus">MIDI not connected</div>
+</header>
+
+<div class="panel">
+  <div class="row"><button id="connectBtn">Connect piano (MIDI)</button></div>
+  <div class="grid" style="margin-top:12px">
+    <label>Tempo (BPM)<input id="bpm" type="number" min="30" max="240" value="80" inputmode="numeric"></label>
+    <label>Time signature
+      <select id="meter"><option>4/4</option><option>3/4</option><option>2/4</option><option>6/8</option></select>
+    </label>
+    <label>Shortest note
+      <select id="grid"><option value="1">16th</option><option value="2">8th</option></select>
+    </label>
+    <label>Hands
+      <select id="hands">
+        <option value="auto">Auto (smart)</option>
+        <option value="fixed:60">Split at middle C</option>
+        <option value="fixed:55">Split at G3</option>
+        <option value="fixed:64">Split at E4</option>
+      </select>
+    </label>
+    <label>Key
+      <select id="key"><option value="auto">Auto-detect</option></select>
+    </label>
+    <label>Title<input id="title" value="My Song"></label>
+  </div>
+  <details style="margin-top:10px">
+    <summary>Timing calibration</summary>
+    <div class="grid" style="margin-top:8px">
+      <label>Latency offset (ms)<input id="latency" type="number" value="0" step="10" inputmode="numeric"></label>
+      <label>Metronome<select id="click"><option value="1">On</option><option value="0">Count-in only</option></select></label>
+    </div>
+    <p class="hint">If every note lands a little late (or early) on the sheet, raise (or lower) the offset.</p>
+  </details>
+</div>
+
+<div class="panel">
+  <button id="recBtn" disabled><span class="dot"></span><span id="recLabel">Record</span></button>
+  <div id="beat"></div>
+  <div id="info">Connect your piano, then press Record. You get a one-bar count-in.</div>
+</div>
+
+<div id="sheetWrap"><div id="sheet"><div class="empty">Your sheet music appears here.</div></div></div>
+
+<div class="row noprint" style="margin-top:12px">
+  <button class="secondary" id="playBtn" disabled>▶ Play</button>
+  <button class="secondary" id="pdfBtn" disabled>Save PDF</button>
+  <button class="secondary" id="abcBtn" disabled>ABC</button>
+  <button class="secondary" id="midBtn" disabled>MIDI</button>
+</div>
+<div class="row noprint" style="margin-top:8px"><button class="secondary" id="demoBtn">Try a demo (no piano needed)</button></div>
+
+<script src="vendor/abcjs-basic-min.js"></script>
+<script type="module">
+import { transcribe, keyName } from './notation.js';
+
+const $ = (id) => document.getElementById(id);
+const els = ['bpm', 'meter', 'grid', 'hands', 'key', 'title', 'latency', 'click'];
+let notes = [];          // [{p, t, off}] ms relative to bar 1 downbeat
+let pending = new Map(); // pitch -> onset
+let recording = false, t0 = 0, audio, timer, lastAbc = '', visual;
+
+// key options
+for (let f = -7; f <= 7; f++) for (const minor of [false, true]) {
+  const o = document.createElement('option');
+  o.value = `${f},${minor ? 1 : 0}`; o.textContent = keyName({ fifths: f, minor }).replace('m', ' minor').replace(/^([A-G][#b]?)$/, '$1 major');
+  $('key').append(o);
+}
+
+// persist settings + last take (best effort)
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const saved = store.get('settings') || {};
+for (const id of els) if (saved[id] != null) $(id).value = saved[id];
+notes = store.get('take') || [];
+for (const id of els) $(id).addEventListener('change', () => {
+  store.set('settings', Object.fromEntries(els.map((i) => [i, $(i).value])));
+  render();
+});
+
+function opts() {
+  const [hm, sp] = $('hands').value.split(':');
+  const kv = $('key').value;
+  return {
+    bpm: +$('bpm').value || 80, meter: $('meter').value, grid: +$('grid').value,
+    hands: hm, splitPoint: +sp || 60, title: $('title').value || 'My Song',
+    key: kv === 'auto' ? 'auto' : { fifths: +kv.split(',')[0], minor: kv.endsWith(',1') },
+    barsPerLine: innerWidth < 600 ? 2 : 4,
+  };
+}
+
+function render() {
+  const has = notes.length > 0;
+  for (const b of ['playBtn', 'pdfBtn', 'abcBtn', 'midBtn']) $(b).disabled = !has;
+  if (!has) return;
+  const r = transcribe(notes, opts());
+  lastAbc = r.abc;
+  [visual] = ABCJS.renderAbc('sheet', r.abc, { responsive: 'resize', add_classes: true, paddingleft: 0, paddingright: 0 });
+  if (!recording && r.key) $('info').textContent = `${notes.length} notes · key ${keyName(r.key)} · RH ${r.rh.length} / LH ${r.lh.length}`;
+}
+
+// ---------- MIDI ----------
+function onMidi(e) {
+  const [st, p, v] = e.data, cmd = st & 0xf0;
+  if (!recording) return;
+  const t = e.timeStamp - t0 - (+$('latency').value || 0) - (audio.outputLatency || audio.baseLatency || 0) * 1000;
+  if (cmd === 0x90 && v > 0) {
+    if (pending.has(p)) notes.push({ p, t: pending.get(p), off: t });
+    pending.set(p, t);
+  } else if (cmd === 0x80 || (cmd === 0x90 && v === 0)) {
+    if (pending.has(p)) { notes.push({ p, t: pending.get(p), off: t }); pending.delete(p); liveRender(); }
+  }
+}
+let liveTimer;
+function liveRender() { clearTimeout(liveTimer); liveTimer = setTimeout(render, 400); }
+
+$('connectBtn').onclick = async () => {
+  if (!navigator.requestMIDIAccess) {
+    $('midiStatus').textContent = 'This browser has no Web MIDI. Use Chrome on Android/desktop.';
+    return;
+  }
+  try {
+    const access = await navigator.requestMIDIAccess();
+    const bind = () => {
+      const names = [];
+      access.inputs.forEach((i) => { i.onmidimessage = onMidi; names.push(i.name); });
+      $('midiStatus').textContent = names.length ? '● ' + names.join(', ') : 'No MIDI device found – plug in & retry';
+      $('midiStatus').className = names.length ? 'ok' : '';
+      $('recBtn').disabled = !names.length;
+    };
+    access.onstatechange = bind;
+    bind();
+  } catch (err) {
+    $('midiStatus').textContent = 'MIDI permission denied';
+  }
+};
+
+// ---------- metronome + recording ----------
+function click(time, accent) {
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.frequency.value = accent ? 1500 : 1000;
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(0.6, time + 0.002);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + 0.06);
+  o.connect(g).connect(audio.destination);
+  o.start(time); o.stop(time + 0.07);
+}
+
+async function start() {
+  audio = audio || new AudioContext();
+  await audio.resume();
+  const o = opts();
+  const beats = { '4/4': 4, '3/4': 3, '2/4': 2, '6/8': 2 }[o.meter];
+  const beatSec = 60 / o.bpm;
+  const lead = 0.15;
+  const aStart = audio.currentTime + lead;
+  const pStart = performance.now() + lead * 1000;
+  t0 = pStart + beats * beatSec * 1000; // downbeat of bar 1, after the count-in
+  notes = []; pending.clear(); recording = true;
+  $('beat').innerHTML = '<i></i>'.repeat(beats);
+  let k = 0;
+  const keepClicking = $('click').value === '1';
+  timer = setInterval(() => {
+    while (aStart + k * beatSec < audio.currentTime + 0.2) {
+      if (k < beats || keepClicking) click(aStart + k * beatSec, k % beats === 0);
+      const idx = k % beats, delay = (aStart + k * beatSec - audio.currentTime) * 1000, countIn = k < beats;
+      setTimeout(() => {
+        [...$('beat').children].forEach((d, i) => d.classList.toggle('hit', i === idx));
+        $('info').textContent = countIn ? `Count-in… ${beats - idx}` : `Recording · ${notes.length} notes`;
+      }, delay);
+      k++;
+    }
+  }, 25);
+  $('recBtn').classList.add('on'); $('recLabel').textContent = 'Stop';
+  $('sheet').innerHTML = '<div class="empty">Listening…</div>';
+}
+
+function stop() {
+  recording = false;
+  clearInterval(timer);
+  const now = performance.now() - t0;
+  pending.forEach((t, p) => notes.push({ p, t, off: now }));
+  pending.clear();
+  notes.sort((a, b) => a.t - b.t);
+  store.set('take', notes);
+  $('beat').innerHTML = '';
+  $('recBtn').classList.remove('on'); $('recLabel').textContent = 'Record again';
+  if (!notes.length) { $('info').textContent = 'No notes received.'; return; }
+  render();
+}
+$('recBtn').onclick = () => (recording ? stop() : start());
+
+// ---------- outputs ----------
+function download(name, data, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([data], { type }));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const fname = () => ($('title').value || 'song').replace(/[^\w-]+/g, '_');
+$('abcBtn').onclick = () => download(fname() + '.abc', lastAbc, 'text/plain');
+$('midBtn').onclick = () => download(fname() + '.mid', ABCJS.synth.getMidiFile(lastAbc, { midiOutputType: 'binary' })[0], 'audio/midi');
+$('pdfBtn').onclick = () => print();
+
+let synth;
+$('playBtn').onclick = async () => {
+  if (synth) { synth.stop(); synth = null; $('playBtn').textContent = '▶ Play'; return; }
+  try {
+    audio = audio || new AudioContext(); await audio.resume();
+    synth = new ABCJS.synth.CreateSynth();
+    await synth.init({ visualObj: visual, audioContext: audio, millisecondsPerMeasure: visual.millisecondsPerMeasure() });
+    await synth.prime();
+    synth.start();
+    $('playBtn').textContent = '■ Stop';
+  } catch (e) {
+    synth = null;
+    $('info').textContent = 'Playback needs an internet connection the first time (piano sounds download).';
+  }
+};
+
+// ---------- demo ----------
+$('demoBtn').onclick = () => {
+  const q = 60000 / (+$('bpm').value || 80);
+  const N = (p, b, l = 1, j = 0) => ({ p, t: b * q + j, off: (b + l) * q - 0.08 * q });
+  const d = [];
+  // RH melody (G major, with a chromatic C# and a tie over the barline); LH broken chords + bass
+  const mel = [[67, 0, 1], [71, 1, .5], [72, 1.5, .5], [74, 2, 1.5], [73, 3.5, .5], [74, 4, 1], [76, 5, .5], [74, 5.5, .5],
+    [72, 6, 1], [71, 7, 2], [69, 9, 1], [67, 10, .5], [66, 10.5, .5], [67, 11, 1], [62, 12, 4]];
+  mel.forEach(([p, b, l], i) => d.push(N(p, b, l, (i % 3 - 1) * 0.04 * q)));
+  [[43, 47, 50], [48, 52, 55], [50, 54, 57], [43, 47, 50]].forEach((ch, bar) => {
+    d.push(N(ch[0] - 12, bar * 4, 2, -0.02 * q));
+    ch.forEach((p, i) => d.push(N(p, bar * 4 + 2 + i * 0.5, 0.5, 0.03 * q)));
+  });
+  d.push(N(67, 12, 4), N(71, 12, 4)); // final RH chord D-G-B over the LH G
+  notes = d.sort((a, b) => a.t - b.t);
+  render();
+};
+
+render();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
