@@ -29,10 +29,10 @@ export async function sheetPdf(svgs) {
   // one scale for every line: wide enough for the widest (a crowded line can stick out a little)
   const right = (s) => { const b = s.getBBox(); return b.x + b.width; };
   const CW = Math.max(...svgs.map((s) => Math.max(s.viewBox.baseVal.width, right(s) + 1)));
-  const items = svgs.map((svg) => {
+  const items = svgs.map((svg, i) => {
     const vb = svg.viewBox.baseVal, bb = svg.getBBox();
     // a line without staff (the title) is centred on the page
-    const title = bb.width < 0.6 * vb.width;
+    const title = i === 0 && vb.height < 90; // the title has its own line without staff
     const x = title ? bb.x + bb.width / 2 - CW / 2 : vb.x;
     return { svg, title, box: [x, vb.y, CW, vb.height], h: ((W - 2 * M) * vb.height) / CW };
   });
@@ -53,7 +53,7 @@ export async function sheetPdf(svgs) {
     if ((i === pages.length - 1 && pages.length > 1 && lines.length < pages[0].length) || lines.length < 2) return;
     const t = lines[0].title ? 1 : 0, gaps = lines.length - 1 - t; // the title stays with the first line
     if (gaps < 1) return;
-    const last = lines[lines.length - 1], extra = Math.min(BOTTOM - (last.y + last.h), 30 * gaps);
+    const last = lines[lines.length - 1], extra = Math.min(BOTTOM - (last.y + last.h), 10 * gaps);
     lines.forEach((l, k) => { l.y += (extra * Math.max(0, k - t)) / gaps; });
   });
   const cw = px(W), ch = px(H);

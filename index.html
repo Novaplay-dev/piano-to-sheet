@@ -435,7 +435,7 @@ function preparePrint() {
   const box = $('printSheet');
   // engraved like a printed score: no RH/LH labels, abcjs picks the line breaks so no line is crowded
   const abc = r.abc.replace(/ name="[^"]*"/g, '');
-  ABCJS.renderAbc(box, abc, { oneSvgPerLine: true, responsive: 'resize', paddingleft: 0, paddingright: 0, staffwidth: 740,
+  ABCJS.renderAbc(box, abc, { oneSvgPerLine: true, responsive: 'resize', paddingleft: 0, paddingright: 0, staffwidth: 1000,
     wrap: { minSpacing: 1.0, maxSpacing: 2.2, preferredMeasuresPerLine: 4 } });
   // Make the pages ourselves: whole lines per page, then a forced page break.
   // (Chrome on Android doesn't keep a line together with break-inside alone.)
