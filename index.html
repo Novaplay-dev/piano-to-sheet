@@ -433,7 +433,10 @@ function preparePrint() {
   const r = transcribe(notes, { ...opts(), barsPerLine: 4 });
   if (!r.abc) return;
   const box = $('printSheet');
-  ABCJS.renderAbc(box, r.abc, { oneSvgPerLine: true, responsive: 'resize', paddingleft: 0, paddingright: 0 });
+  // engraved like a printed score: no RH/LH labels, abcjs picks the line breaks so no line is crowded
+  const abc = r.abc.replace(/ name="[^"]*"/g, '');
+  ABCJS.renderAbc(box, abc, { oneSvgPerLine: true, responsive: 'resize', paddingleft: 0, paddingright: 0, staffwidth: 740,
+    wrap: { minSpacing: 1.0, maxSpacing: 2.2, preferredMeasuresPerLine: 4 } });
   // Make the pages ourselves: whole lines per page, then a forced page break.
   // (Chrome on Android doesn't keep a line together with break-inside alone.)
   // ponytail: sized for A4 with 12 mm margins (186 mm wide), 230 mm used of 273 so Letter or other margins still fit
