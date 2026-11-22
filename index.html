@@ -100,6 +100,7 @@
   <button class="secondary" id="abcBtn" disabled>ABC</button>
   <button class="secondary" id="midBtn" disabled>MIDI</button>
 </div>
+<div class="row noprint" style="margin-top:8px"><button class="secondary" id="rawBtn" disabled>Save raw recording (for checking)</button></div>
 <div class="row noprint" style="margin-top:8px"><button class="secondary" id="demoBtn">Try a demo (no piano needed)</button></div>
 
 <script src="vendor/abcjs-basic-min.js"></script>
@@ -146,7 +147,7 @@ function opts() {
 
 function render() {
   const has = notes.length > 0;
-  for (const b of ['playBtn', 'pdfBtn', 'abcBtn', 'midBtn']) $(b).disabled = !has;
+  for (const b of ['playBtn', 'pdfBtn', 'abcBtn', 'midBtn', 'rawBtn']) $(b).disabled = !has;
   if (!has) return;
   const r = transcribe(notes, opts());
   lastAbc = r.abc;
@@ -256,6 +257,8 @@ const fname = () => ($('title').value || 'song').replace(/[^\w-]+/g, '_');
 $('abcBtn').onclick = () => download(fname() + '.abc', lastAbc, 'text/plain');
 $('midBtn').onclick = () => download(fname() + '.mid', ABCJS.synth.getMidiFile(lastAbc, { midiOutputType: 'binary' })[0], 'audio/midi');
 $('pdfBtn').onclick = () => print();
+// exactly what the piano sent (ms from bar 1) + settings, so a take can be re-checked offline
+$('rawBtn').onclick = () => download(fname() + '-raw.json', JSON.stringify({ settings: opts(), notes }), 'application/json');
 
 let synth;
 $('playBtn').onclick = async () => {
