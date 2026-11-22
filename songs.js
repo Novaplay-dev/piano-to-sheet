@@ -71,21 +71,33 @@ function rng(seed) {
 }
 
 // -> [{p, t, off, hand}] in ms. Quarter-note length follows the meter's beat (bpm counts beats).
-export function perform(song, seed = 1, { jitter = 22 } = {}) {
+export function perform(song, seed = 1, { jitter = 22, rubato = 0 } = {}) {
   const r = rng(seed), u = (a) => (r() * 2 - 1) * a;
   const beatQ = { '3/8': 0.5, '6/8': 1.5, '9/8': 1.5, '12/8': 1.5, '2/2': 2 }[song.meter] || 1;
   const msQ = 60000 / song.bpm / beatQ;
+  // rubato: playing freely, no metronome. Tempo swings +-rubato (period ~6-10 quarters),
+  // drifts slowly overall, and the take starts at a random moment.
+  const ph = r() * 6.28, per = 6 + r() * 4, drift = u(rubato), lead = rubato ? 500 + r() * 2000 : 0;
+  const end = Math.max(...[...song.rh, ...song.lh].map((n) => n.s + n.len)) + 1;
+  const T = [0];
+  for (let i = 1; i <= end * 100; i++) {
+    const q = i / 100, f = 1 + rubato * Math.sin((2 * Math.PI * q) / per + ph) + (drift * q) / end;
+    T.push(T[i - 1] + (msQ * f) / 100);
+  }
+  const at = (q) => lead + T[Math.min(T.length - 1, Math.round(q * 100))];
   const chordShift = new Map(); // same onset in one hand rolls slightly
   const out = [];
   for (const [hand, notes] of [['R', song.rh], ['L', song.lh]]) {
     for (const n of notes) {
       const key = hand + n.s;
       if (!chordShift.has(key)) chordShift.set(key, u(jitter));
-      const t = n.s * msQ + chordShift.get(key) + u(8);
-      const lenMs = n.len * msQ;
-      const off = n.s * msQ + lenMs * (0.78 + r() * 0.2) + u(jitter);
+      const t = at(n.s) + chordShift.get(key) + u(8);
+      const lenMs = at(n.s + n.len) - at(n.s);
+      const off = at(n.s) + lenMs * (0.78 + r() * 0.2) + u(jitter);
       out.push({ p: n.p, t, off: Math.max(off, t + 40), hand });
     }
   }
-  return out.sort((a, b) => a.t - b.t);
+  out.sort((a, b) => a.t - b.t);
+  out.quarterTimes = Array.from({ length: Math.floor(end) + 1 }, (_, q) => at(q)); // true beat clock (for tests)
+  return out;
 }

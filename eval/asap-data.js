@@ -59,7 +59,9 @@ export function load(root, perPiece = 1) {
       if (pa.length !== sa.length) { skip('annotation mismatch'); continue; }
       const pPos = beatPos(pa.map((a) => a.t));
       const msPerTick = MS_PER_BEAT / m.beat;
-      const perf = readMidi(readFileSync(join(dir, pf))).map((n, id) => ({
+      const midiNotes = readMidi(readFileSync(join(dir, pf)));
+      const rawPerf = midiNotes.map((n, id) => ({ id, p: n.p, t: n.t * 1000, off: n.off * 1000 })); // as played (rubato)
+      const perf = midiNotes.map((n, id) => ({
         id, p: n.p, b: pPos(n.t), t: toTick(pPos(n.t)) * msPerTick, off: toTick(pPos(n.off)) * msPerTick,
       }));
       const used = new Set(), match = new Map();
@@ -68,7 +70,7 @@ export function load(root, perPiece = 1) {
         for (const i of byPitch.get(n.p) || []) { const d = Math.abs(truth[i].b - n.b); if (d < bd && !used.has(i)) { bd = d; best = i; } }
         if (best >= 0) { used.add(best); match.set(n.id, truth[best]); }
       }
-      items.push({ name: dir.slice(root.length + 1) + '/' + pf, meter, key: keys.length === 1 ? +keys[0] : null, perf, match });
+      items.push({ name: dir.slice(root.length + 1) + '/' + pf, meter, key: keys.length === 1 ? +keys[0] : null, perf, match, rawPerf, beatsMs: pa.map((a) => a.t * 1000), dbMs: pa.filter((a) => a.kind === 'db').map((a) => a.t * 1000), tpb });
     }
   }
   return { items, skipped };

@@ -60,7 +60,8 @@
 <div class="panel">
   <div class="row"><button id="connectBtn">Connect piano (MIDI)</button></div>
   <div class="grid" style="margin-top:12px">
-    <label>Tempo (beats/min)<input id="bpm" type="number" min="30" max="240" value="80" inputmode="numeric"></label>
+    <label>Tempo (beats/min)<input id="bpm" type="number" min="30" max="240" value="80" inputmode="numeric">
+      <button class="secondary" id="tapBtn" type="button" style="min-height:40px;margin-top:4px">👆 Tap tempo</button></label>
     <label>Time signature
       <select id="meter"><option>4/4</option><option>3/4</option><option>2/4</option><option>2/2</option><option>3/8</option><option>6/8</option><option>9/8</option><option>12/8</option></select>
     </label>
@@ -85,6 +86,7 @@
     <label>Title<input id="title" value="My Song"></label>
     <label>Metronome
       <select id="click">
+        <option value="free">Off – I play freely (tempo found automatically)</option>
         <option value="1">On</option>
         <option value="quiet">Quiet</option>
         <option value="0">Count-in only</option>
@@ -92,7 +94,7 @@
       </select>
     </label>
   </div>
-  <p class="hint">Play along with the beat, even with the sound off (watch the dots) — the sheet's rhythm is measured against it.</p>
+  <p class="hint" id="clickHint"></p>
   <details style="margin-top:10px">
     <summary>Timing calibration</summary>
     <div class="grid" style="margin-top:8px">
@@ -109,6 +111,10 @@
   <div id="info">Connect your piano, then press Record. You get a one-bar count-in.</div>
 </div>
 
+<div class="row noprint" id="scaleRow" hidden style="margin-bottom:8px">
+  <button class="secondary" id="longerBtn">Notes look too short → ×2</button>
+  <button class="secondary" id="shorterBtn">Notes look too long → ÷2</button>
+</div>
 <div id="sheetWrap"><div id="sheet"><div class="empty">Your sheet music appears here.</div></div></div>
 
 <div class="row noprint" style="margin-top:12px">
@@ -135,6 +141,7 @@ const $ = (id) => document.getElementById(id);
 const els = ['bpm', 'meter', 'grid', 'hands', 'lhTop', 'key', 'title', 'latency', 'click'];
 let notes = [];          // [{p, t, off}] ms relative to bar 1 downbeat
 let pending = new Map(); // pitch -> onset
+let tempoScale = 1;      // free mode: x2 / /2 if the beat was found at the wrong level
 let crossMarks = [];     // ms from bar 1 where "cross hands" was tapped (each tap toggles)
 let recording = false, t0 = 0, audio, timer, lastAbc = '', visual, midiCount = 0;
 
@@ -170,17 +177,17 @@ const saved = store.get('settings') || {};
 if (typeof saved.hands === 'string' && saved.hands.startsWith('fixed:')) { saved.lhTop = +saved.hands.slice(6) - 1; saved.hands = 'fixed'; } // old format
 for (const id of els) if (saved[id] != null) $(id).value = saved[id];
 showSplit();
-{ const take = store.get('take'); notes = Array.isArray(take) ? take : take?.notes || []; crossMarks = take?.cross || []; }
+{ const take = store.get('take'); notes = Array.isArray(take) ? take : take?.notes || []; crossMarks = take?.cross || []; tempoScale = take?.scale || 1; }
 for (const id of els) $(id).addEventListener('change', () => {
   store.set('settings', Object.fromEntries(els.map((i) => [i, $(i).value])));
   render();
 });
 
 function opts() {
-
-  const kv = $('key').value;
+  const kv = $('key').value, free = $('click').value === 'free';
   return {
-    bpm: +$('bpm').value || 80, meter: $('meter').value, grid: +$('grid').value,
+    free, // in free mode the tempo is only a hint for finding the beat
+    bpm: (+$('bpm').value || 80) * (free ? tempoScale : 1), meter: $('meter').value, grid: +$('grid').value,
     hands: $('hands').value, splitPoint: +$('lhTop').value + 1, title: $('title').value || 'My Song',
     key: kv === 'auto' ? 'auto' : { fifths: +kv.split(',')[0], minor: kv.endsWith(',1') },
     barsPerLine: innerWidth < 600 ? 2 : 4,
@@ -205,7 +212,8 @@ function render() {
     $('sheet').innerHTML = `<div class="empty">Sorry, this sheet couldn't be drawn (${e.message}). Your recording is safe: tap "Save raw recording" and send the file.</div>`;
     return;
   }
-  if (!recording && r.key) $('info').textContent = `${notes.length} notes · key ${keyName(r.key)} · RH ${r.rh.length} / LH ${r.lh.length}`;
+  if (!recording && r.key) $('info').textContent = `${notes.length} notes · key ${keyName(r.key)} · RH ${r.rh.length} / LH ${r.lh.length}${opts().free ? ` · tempo found ≈ ${r.bpm}` : ''}`;
+  $('scaleRow').hidden = recording || !opts().free;
 }
 
 // ---------- MIDI ----------
@@ -280,14 +288,22 @@ async function start() {
   audio = audio || new AudioContext();
   await audio.resume();
   const o = opts();
+  notes = []; pending.clear(); midiCount = 0; tempoScale = 1;
+  crossMarks = []; $('crossBtn').hidden = false; crossLabel();
+  $('recBtn').classList.add('on'); $('recLabel').textContent = 'Stop';
+  $('sheet').innerHTML = '<div class="empty">Listening…</div>';
+  if (o.free) { // no metronome: just record; the beat is found afterwards
+    t0 = performance.now(); recording = true;
+    timer = setInterval(() => { $('info').textContent = `Recording freely · ${notes.length} notes (${midiCount} MIDI messages)${crossMarks.length % 2 ? ' · hands crossed' : ''}`; }, 250);
+    return;
+  }
   const beats = METERS[o.meter].bar / METERS[o.meter].beat; // 6/8 clicks dotted quarters
   const beatSec = 60 / o.bpm;
   const lead = 0.15;
   const aStart = audio.currentTime + lead;
   const pStart = performance.now() + lead * 1000;
   t0 = pStart + beats * beatSec * 1000; // downbeat of bar 1, after the count-in
-  notes = []; pending.clear(); recording = true; midiCount = 0;
-  crossMarks = []; $('crossBtn').hidden = false; crossLabel();
+  recording = true;
   $('beat').innerHTML = '<i></i>'.repeat(beats);
   let k = 0;
   const mode = $('click').value; // '1' on, 'quiet', '0' count-in only, 'silent'
@@ -295,7 +311,8 @@ async function start() {
   timer = setInterval(() => {
     while (aStart + k * beatSec < audio.currentTime + 0.2) {
       if (audible(k)) click(aStart + k * beatSec, k % beats === 0);
-      const idx = k % beats, delay = (aStart + k * beatSec - audio.currentTime) * 1000, countIn = k < beats;
+      // dots flash when the click is actually heard (phones delay audio output)
+      const idx = k % beats, delay = (aStart + k * beatSec - audio.currentTime + (audio.outputLatency || audio.baseLatency || 0)) * 1000, countIn = k < beats;
       setTimeout(() => {
         [...$('beat').children].forEach((d, i) => d.classList.toggle('hit', i === idx));
         $('info').textContent = countIn ? `Count-in… ${beats - idx}` : `Recording · ${notes.length} notes (${midiCount} MIDI messages)${crossMarks.length % 2 ? ' · hands crossed' : ''}`;
@@ -303,8 +320,6 @@ async function start() {
       k++;
     }
   }, 25);
-  $('recBtn').classList.add('on'); $('recLabel').textContent = 'Stop';
-  $('sheet').innerHTML = '<div class="empty">Listening…</div>';
 }
 
 function stop() {
@@ -314,7 +329,7 @@ function stop() {
   pending.forEach((t, p) => notes.push({ p, t, off: now }));
   pending.clear();
   notes.sort((a, b) => a.t - b.t);
-  store.set('take', { notes, cross: crossMarks });
+  store.set('take', { notes, cross: crossMarks, scale: tempoScale });
   $('crossBtn').hidden = true;
   $('beat').innerHTML = '';
   $('recBtn').classList.remove('on'); $('recLabel').textContent = 'Record again';
@@ -385,6 +400,29 @@ $('playBtn').onclick = async () => {
   }
 };
 
+// ---------- tempo: tap along, and fix double/half note values afterwards ----------
+let taps = [];
+$('tapBtn').onclick = () => {
+  const now = performance.now();
+  taps = taps.filter((t) => now - t < 3000).concat(now); // a pause starts a new tapping
+  if (taps.length >= 3) {
+    const iv = taps.slice(1).map((t, i) => t - taps[i]).sort((a, b) => a - b);
+    $('bpm').value = Math.round(60000 / iv[iv.length >> 1]);
+    $('bpm').dispatchEvent(new Event('change'));
+  }
+  $('tapBtn').textContent = taps.length < 3 ? `👆 Tap tempo (${taps.length}/3…)` : `👆 Tap tempo: ${$('bpm').value}`;
+};
+const rescale = (f) => { tempoScale *= f; store.set('take', { notes, cross: crossMarks, scale: tempoScale }); render(); };
+$('longerBtn').onclick = () => rescale(0.5); // slower beat -> longer note values
+$('shorterBtn').onclick = () => rescale(2);
+function clickHint() {
+  $('clickHint').textContent = $('click').value === 'free'
+    ? 'Free playing: press Record and just play. The beat is found from your playing — set the tempo roughly (or tap it) so note values come out right.'
+    : 'Play along with the beat, even with the sound off (watch the dots) — the rhythm is measured against it.';
+}
+$('click').addEventListener('change', clickHint);
+clickHint();
+
 // ---------- demo: a humanized performance of a real piece (cycles through them) ----------
 let demoIdx = 0;
 $('demoBtn').onclick = () => {
@@ -392,7 +430,7 @@ $('demoBtn').onclick = () => {
   $('bpm').value = song.bpm; $('meter').value = song.meter; $('title').value = song.name;
   $('key').value = 'auto'; $('hands').value = 'auto';
   notes = perform(song, Date.now() % 1000).map(({ p, t, off }) => ({ p, t, off }));
-  crossMarks = [];
+  crossMarks = []; tempoScale = 1;
   render();
   $('demoBtn').textContent = `Demo: ${song.name} — tap for next`;
 };

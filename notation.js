@@ -413,6 +413,106 @@ function avgPitch(bars) {
   return ps.length ? avg(ps) : -Infinity;
 }
 
+// ---------- 0. free playing (no metronome): find the beat in the performance ----------
+// Onset events (notes struck within 40 ms = one event) get an accent weight: chords, long
+// notes and bass notes are stronger. The tempo is the strongest periodicity of the accent
+// envelope near the tempo hint; then a dynamic-programming beat tracker (Ellis 2007) picks
+// beat times that land on strong events while letting the tempo drift (rubato).
+export const FREE = { alpha: 20, prior: 0.6, frame: 10 };
+function onsetEvents(notes) {
+  const ns = [...notes].sort((a, b) => a.t - b.t), evs = [];
+  for (const n of ns) {
+    const last = evs[evs.length - 1];
+    if (last && n.t - last.t0 < 40) last.ns.push(n); else evs.push({ t0: n.t, ns: [n] });
+  }
+  return evs.map((e) => {
+    const t = e.ns.reduce((s, n) => s + n.t, 0) / e.ns.length;
+    const dur = Math.max(...e.ns.map((n) => n.off - n.t));
+    const low = Math.min(...e.ns.map((n) => n.p));
+    return { t, w: 1 + 0.3 * (e.ns.length - 1) + Math.min(dur, 1500) / 1000 + (low < 55 ? 0.5 : 0) };
+  });
+}
+
+export function trackBeats(notes, { bpm = 80 } = {}) {
+  const F = FREE.frame, evs = onsetEvents(notes);
+  const start = evs[0].t, N = Math.ceil((evs[evs.length - 1].t - start) / F) + 2;
+  const env = new Float64Array(N);
+  for (const e of evs) for (let d = -4; d <= 4; d++) {
+    const i = Math.round((e.t - start) / F) + d;
+    if (i >= 0 && i < N) env[i] += e.w * Math.exp(-0.5 * (d / 2) ** 2);
+  }
+  const mean = env.reduce((a, b) => a + b, 0) / N;
+  const sd = Math.sqrt(env.reduce((a, b) => a + (b - mean) ** 2, 0) / N) || 1;
+  for (let i = 0; i < N; i++) env[i] /= sd;
+  // tempo: autocorrelation weighted by a log-normal prior around the hint
+  const hint = 60000 / bpm / F;
+  let P = Math.round(hint), bestA = -1;
+  for (let L = Math.round(hint / 2.5); L <= Math.round(hint * 2.5) && L < N; L++) {
+    let a = 0;
+    for (let i = 0; i + L < N; i++) a += env[i] * env[i + L];
+    a = (a / (N - L)) * Math.exp(-0.5 * (Math.log2(L / hint) / FREE.prior) ** 2);
+    if (a > bestA) { bestA = a; P = L; }
+  }
+  // dynamic programming beat tracking
+  const score = new Float64Array(N), back = new Int32Array(N).fill(-1);
+  for (let t = 0; t < N; t++) {
+    let best = 0, arg = -1;
+    for (let tau = t - Math.round(2 * P); tau <= t - Math.round(P / 2); tau++) {
+      if (tau < 0) continue;
+      const v = score[tau] - FREE.alpha * Math.log((t - tau) / P) ** 2;
+      if (arg < 0 || v > best) { best = v; arg = tau; }
+    }
+    score[t] = env[t] + (arg >= 0 ? Math.max(best, 0) : 0);
+    back[t] = arg >= 0 && best > 0 ? arg : -1;
+  }
+  let t = N - 1;
+  for (let i = Math.max(0, N - P); i < N; i++) if (score[i] > score[t]) t = i;
+  const fr = [];
+  for (; t >= 0; t = back[t]) fr.unshift(t);
+  let beats = fr.map((i) => start + i * F);
+  // extend with the local beat length to cover notes before the first / after the last beat
+  while (beats[0] > evs[0].t - 1) beats.unshift(beats[0] - (beats[1] - beats[0] || P * F));
+  const lastNote = Math.max(...notes.map((n) => n.off));
+  while (beats[beats.length - 1] < lastNote + 1) { const n = beats.length; beats.push(beats[n - 1] + (beats[n - 1] - beats[n - 2] || P * F)); }
+  return { beats, evs };
+}
+
+// seconds/ms -> fractional beat index, piecewise linear between beat times
+export function beatIndexer(beats) {
+  return (x) => {
+    let lo = 0, hi = beats.length - 1;
+    if (x <= beats[0]) return (x - beats[0]) / (beats[1] - beats[0]);
+    if (x >= beats[hi]) return hi + (x - beats[hi]) / (beats[hi] - beats[hi - 1]);
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (beats[mid] <= x) lo = mid; else hi = mid; }
+    return lo + (x - beats[lo]) / (beats[lo + 1] - beats[lo]);
+  };
+}
+
+// Re-time a freely played take onto a steady grid: finds the beats and returns notes (and cross-hand taps) as if
+// played to a metronome at the detected tempo, with the first bar starting at 0.
+export function freeTiming(notes, { bpm = 80, meter = '4/4', cross = [] } = {}) {
+  if (notes.length < 2) return { notes, cross, bpm };
+  const m = METERS[meter];
+  // Track quarter notes in simple meters (2/2 half-note beats are split in two), so tempo
+  // changes inside a long beat don't push notes off their slots. Never finer: an 8th-note
+  // pulse clashes with triplets. Compound meters keep the dotted-quarter beat.
+  const sub = m.compound ? 1 : Math.max(1, m.beat / 12);
+  const { beats, evs } = trackBeats(notes, { bpm: bpm * sub });
+  const idx = beatIndexer(beats);
+  const pos = (x) => idx(x) / sub; // in meter beats
+  // Bar 1 starts on the first note's beat: you start recording at the start of the song.
+  // (Picking the most accented beat instead was worse on real performances.)
+  const bar1 = Math.round(idx(evs[0].t)) / sub;
+  const intervals = beats.slice(1).map((b, i) => b - beats[i]).sort((a, b) => a - b);
+  const msBeat = intervals[intervals.length >> 1] * sub;
+  const out = (x) => (pos(x) - bar1) * msBeat;
+  return {
+    notes: notes.map((n) => ({ ...n, t: out(n.t), off: out(n.off) })),
+    cross: cross.map(out),
+    bpm: 60000 / msBeat, // exact: rounding here would drift the grid over the bars
+  };
+}
+
 // Pause cut + crossed hands. `cross` = times (ms from bar 1) where the player tapped the
 // "cross hands" button; each tap toggles crossed mode for the notes after it.
 // Around every tap, whole bars of silence are removed (the player stopped to cross hands),
@@ -451,7 +551,8 @@ function barClefs(main, held, start) {
 }
 
 export function transcribe(rawNotes, opts) {
-  const { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3, cross = [] } = opts;
+  let { bpm = 90, meter = '4/4', grid = 1, hands = 'auto', splitPoint = 60, key = 'auto', title = 'My Song', barsPerLine = 3, cross = [], free = false } = opts;
+  if (free && rawNotes.length > 1) ({ notes: rawNotes, cross, bpm } = freeTiming(rawNotes, { bpm, meter, cross }));
   const m = METERS[meter], g = grid * 3;
   const q = applyCrossMarks(quantize(rawNotes, { bpm, meter, grid }), cross, 60000 / bpm / m.beat, m.bar);
   if (!q.length) return { abc: '', key: null };
@@ -480,13 +581,13 @@ export function transcribe(rawNotes, opts) {
     return pre + b;
   });
   const R = decorate(staffAbc(bR, bR2, m), cR, true), L = decorate(staffAbc(bL, bL2, m), cL, false);
-  let abc = `X:1\nT:${title}\nM:${meter}\nL:1/48\nQ:${m.q}=${bpm}\nK:${keyName(k)}\n%%score {RH | LH}\nV:RH clef=${cR[0]} name="RH"\nV:LH clef=${cL[0]} name="LH"\n`;
+  let abc = `X:1\nT:${title}\nM:${meter}\nL:1/48\nQ:${m.q}=${Math.round(bpm)}\nK:${keyName(k)}\n%%score {RH | LH}\nV:RH clef=${cR[0]} name="RH"\nV:LH clef=${cL[0]} name="LH"\n`;
   for (let i = 0; i < nBars; i += barsPerLine) {
     const end = i + barsPerLine >= nBars ? ' |]' : ' |';
     abc += `[V:RH] ${R.slice(i, i + barsPerLine).join(' | ')}${end}\n`;
     abc += `[V:LH] ${L.slice(i, i + barsPerLine).join(' | ')}${end}\n`;
   }
-  return { abc, key: k, lh, rh, voices: { rh: vR, lh: vL } };
+  return { abc, key: k, lh, rh, voices: { rh: vR, lh: vL }, bpm: Math.round(bpm) };
 }
 
 // ---------- helpers ----------

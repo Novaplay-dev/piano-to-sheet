@@ -140,6 +140,20 @@ for (const song of SONGS) {
   console.log(`${song.name.padEnd(30)} hands ${pct(handOk)}  onsets ${pct(onsetOk)}  lengths ${pct(lenOk)}  key ${keyOk}/${SEEDS}`);
   song.result = { hand: handOk / notes, onset: onsetOk / notes, len: lenOk / notes, key: keyOk / SEEDS };
 }
+// --- free playing (no metronome): beat found from the playing, tempo drifts +-8% ---
+for (const song of SONGS) {
+  const truth = new Map();
+  for (const [h, ns] of [['rh', song.rh], ['lh', song.lh]]) for (const n of ns) truth.set(`${n.p}@${Math.round(n.s * 12)}`, h);
+  let n = 0, ok = 0;
+  for (let seed = 1; seed <= 10; seed++) {
+    const r = transcribe(perform(song, seed, { rubato: 0.08 }), { free: true, bpm: song.bpm, meter: song.meter });
+    assert.equal(abcProblem(r.abc, song.meter), null);
+    for (const h of ['rh', 'lh']) for (const x of r[h]) { n++; if (truth.get(`${x.p}@${x.s}`) === h) ok++; }
+  }
+  console.log(`${('free: ' + song.name).padEnd(36)} notes right (hand + position) ${((100 * ok) / n).toFixed(1)}%`);
+  assert.ok(ok / n >= 0.97, `${song.name}: free playing ${ok}/${n}`);
+}
+
 // --- engraving details on the real pieces ---
 {
   const abcOf = (name) => {
