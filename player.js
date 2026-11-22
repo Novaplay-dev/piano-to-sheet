@@ -58,7 +58,7 @@ export function midiEvents(buf) {
 
 // Schedules events a little ahead so timing stays exact; pause/seek-safe.
 export class Player {
-  constructor() { this.out = null; this.song = null; this.pos = 0; this.timer = null; this.speed = 1; this.onEnd = null; this.at = 0; }
+  constructor() { this.out = null; this.song = null; this.pos = 0; this.timer = null; this.speed = 1; this.gain = 1; this.onEnd = null; this.at = 0; }
   get playing() { return !!this.timer; }
   load(song) { this.stop(); this.song = song; this.pos = 0; }
   // current position in seconds of the song
@@ -79,7 +79,9 @@ export class Player {
       while (this.pos < ev.length) {
         const e = ev[this.pos], at = this.t0 + (e.t * 1000) / this.speed;
         if (at > horizon) break;
-        out.send(e.data, Math.max(at, performance.now()));
+        // volume = how hard the keys are struck (works on every piano)
+        const d = e.data[0] === 0x90 ? [0x90, e.data[1], Math.max(1, Math.min(127, Math.round(e.data[2] * this.gain)))] : e.data;
+        out.send(d, Math.max(at, performance.now()));
         if (e.data[0] === 0x90) this.on.add(e.data[1]); else if (e.data[0] === 0x80) this.on.delete(e.data[1]);
         this.pos++;
       }

@@ -97,7 +97,9 @@
     <div id="pTime" style="color:var(--muted);font-size:14px;align-self:center">0:00 / 0:00</div>
     <label>Speed<select id="speed"><option value="0.5">50 %</option><option value="0.75">75 %</option><option value="0.9">90 %</option><option value="1" selected>100 %</option><option value="1.25">125 %</option></select></label>
   </div>
-  <p class="hint">Fantaisie-Impromptu: MIDI from the Mutopia Project (mutopiaproject.org), public domain.</p>
+  <label style="margin-top:10px">Volume <span id="volVal"></span><input type="range" id="vol" min="10" max="150" step="5" value="100" style="padding:0;min-height:36px;accent-color:var(--accent)"></label>
+  <label style="flex-direction:row;align-items:center;gap:10px;margin-top:6px;text-transform:none;font-size:15px;color:var(--ink)"><input type="checkbox" id="allBox" style="width:22px;min-height:22px"> Background music: play all pieces, one after another</label>
+  <p class="hint">Built-in pieces: MIDI files from the Mutopia Project (mutopiaproject.org), all public domain.</p>
   <p class="hint">More classical pieces as free MIDI files: e.g. piano-midi.de (download a .mid, then “Open MIDI file”). Pedal and loudness are played too.</p>
   <p class="hint">No sound? Turn the piano's volume up, connect a USB cable that carries data, and check the piano's MIDI settings (MIDI in / receive channel 1 on). Keep the screen on while it plays.</p>
 </div>
@@ -569,7 +571,11 @@ function loadSong(name, bytes) {
   } catch (e) { $('songName').textContent = 'Could not open: ' + e.message; }
   updatePlayer();
 }
-player.onEnd = () => { clearInterval(uiTimer); wake?.release?.(); updatePlayer(); };
+player.onEnd = async () => {
+  clearInterval(uiTimer); wake?.release?.(); updatePlayer();
+  // background music: go on with the next built-in piece
+  if ($('allBox').checked && (await loadPiece((current + 1) % LIBRARY.length))) setTimeout(() => $('pPlay').click(), 2000);
+};
 $('pPlay').onclick = async () => {
   if (player.playing) { player.pause(); clearInterval(uiTimer); wake?.release?.(); return updatePlayer(); }
   const out = outputs.get($('outSel').value); if (!out) return;
@@ -584,21 +590,34 @@ $('seek').onchange = () => { seeking = false; player.seek(+$('seek').value); upd
 $('speed').onchange = () => { if (!player.song) return; const t = player.time(), was = player.playing; player.pause(); player.speed = +$('speed').value; player.seek(t); if (was) player.play(player.out); };
 // built-in pieces (public domain MIDI files in library/)
 const LIBRARY = [
-  { name: 'Chopin – Fantaisie-Impromptu, Op. 66', file: 'library/chopin-fantaisie-impromptu-op66.mid', credit: 'MIDI: Mutopia Project (typeset by Guy D. Lederfein), public domain' },
+  { name: 'Chopin – Fantaisie-Impromptu, Op. 66', file: 'chopin-fantaisie-impromptu-op66.mid', by: 'Guy D. Lederfein' },
+  { name: 'Satie – Gymnopédie No. 1', file: 'satie-gymnopedie-1.mid', by: 'Evin Robertson' },
+  { name: 'Debussy – Clair de Lune', file: 'debussy-clair-de-lune.mid', by: 'Keith OHara' },
+  { name: 'Schumann – Träumerei', file: 'schumann-traeumerei.mid', by: 'Ying-Chun Liu' },
+  { name: 'Bach – Prelude in C major, BWV 846', file: 'bach-prelude-c-bwv846.mid', by: 'Tobias Erbsland' },
+  { name: 'Chopin – Prelude “Raindrop”, Op. 28 No. 15', file: 'chopin-prelude-raindrop-op28-15.mid', by: 'Magnus Lewis-Smith' },
+  { name: 'Chopin – Prelude in E minor, Op. 28 No. 4', file: 'chopin-prelude-e-minor-op28-4.mid', by: 'Magnus Lewis-Smith' },
 ];
-for (const piece of LIBRARY) {
-  const b = Object.assign(document.createElement('button'), { className: 'secondary', textContent: '🎵 ' + piece.name, title: piece.credit });
-  b.style.width = '100%';
-  b.onclick = async () => {
-    $('songName').textContent = 'Loading…';
-    try { const r = await fetch(piece.file); if (!r.ok) throw new Error(r.status); loadSong(piece.name, await r.arrayBuffer()); }
-    catch (e) { $('songName').textContent = 'Could not load (needs internet the first time)'; }
-  };
-  $('library').appendChild(b);
+let current = -1; // index of the playing built-in piece
+async function loadPiece(i) {
+  const piece = LIBRARY[i];
+  $('songName').textContent = 'Loading…';
+  try { const r = await fetch('library/' + piece.file); if (!r.ok) throw new Error(r.status); loadSong(piece.name, await r.arrayBuffer()); current = i; return true; }
+  catch (e) { $('songName').textContent = 'Could not load (needs internet the first time)'; return false; }
 }
+LIBRARY.forEach((piece, i) => {
+  const b = Object.assign(document.createElement('button'), { className: 'secondary', textContent: '🎵 ' + piece.name, title: 'MIDI typeset by ' + piece.by + ' (Mutopia Project), public domain' });
+  b.style.cssText = 'width:100%;margin-bottom:6px;text-align:left';
+  b.onclick = () => loadPiece(i);
+  $('library').appendChild(b);
+});
+// volume slider: remembered, applies right away
+$('vol').value = store.get('vol') ?? 100;
+const setVol = () => { player.gain = $('vol').value / 100; $('volVal').textContent = $('vol').value + ' %'; store.set('vol', +$('vol').value); };
+$('vol').oninput = setVol; setVol();
 $('fileBtn').onclick = () => $('fileIn').click();
-$('fileIn').onchange = async () => { const f = $('fileIn').files[0]; if (f) loadSong(f.name.replace(/\.midi?$/i, ''), await f.arrayBuffer()); $('fileIn').value = ''; };
-$('mySheetBtn').onclick = () => loadSong($('title').value + ' (my sheet)', ABCJS.synth.getMidiFile(lastAbc, { midiOutputType: 'binary' })[0]);
+$('fileIn').onchange = async () => { const f = $('fileIn').files[0]; current = -1; if (f) loadSong(f.name.replace(/\.midi?$/i, ''), await f.arrayBuffer()); $('fileIn').value = ''; };
+$('mySheetBtn').onclick = () => (current = -1, loadSong($('title').value + ' (my sheet)', ABCJS.synth.getMidiFile(lastAbc, { midiOutputType: 'binary' })[0]));
 function setMode(play) {
   $('modePlay').hidden = !play; $('modeRec').hidden = play;
   $('tabPlay').classList.toggle('on', play); $('tabRec').classList.toggle('on', !play);
